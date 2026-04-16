@@ -7,6 +7,7 @@ struct CLIConfig {
     let logPath: URL
     let codex: CodexSettings
     let promptConfig: PromptConfig
+    let sessionID: String
 }
 
 struct TurnOutput: Codable {
@@ -465,7 +466,8 @@ func parseArgs() throws -> CLIConfig {
         verbose: verbose,
         logPath: logPath,
         codex: codex,
-        promptConfig: promptConfig
+        promptConfig: promptConfig,
+        sessionID: UUID().uuidString.lowercased()
     )
 }
 
@@ -519,7 +521,7 @@ func processUserTurn(_ userMessage: String, config: CLIConfig) throws {
                 replayInputItems: replayResult.value.inputItems,
                 promptConfig: config.promptConfig,
                 codex: config.codex,
-                sessionID: config.logPath.path
+                sessionID: config.sessionID
             )
         }
         try logEvent(
@@ -660,7 +662,9 @@ func callModel(
         )
     )
 
-    request.httpBody = try JSONEncoder().encode(payload)
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    request.httpBody = try encoder.encode(payload)
     let responseData = try httpRequest(request)
     let decoded = try decodeModelText(from: responseData)
     guard let data = decoded.text.data(using: .utf8) else {
