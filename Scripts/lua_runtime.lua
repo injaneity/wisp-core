@@ -138,14 +138,6 @@ local function resolve_path(path)
     return "/" .. table.concat(normalized, "/")
 end
 
-local function ensure_writable_path(path, tool_name)
-    local resolved = resolve_path(path)
-    if resolved == workspace_root or resolved:sub(1, #workspace_root + 1) == workspace_root .. "/" then
-        return resolved
-    end
-    error(tool_name .. ": refusing write outside workspace root: " .. workspace_root)
-end
-
 local function split_lines(text)
     local out = {}
     if text == "" then

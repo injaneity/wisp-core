@@ -461,10 +461,6 @@ private func wikiSchemaPath(wikiRoot: URL) -> URL {
     wikiRoot.appendingPathComponent("schema.md").standardizedFileURL
 }
 
-private func wikiPagesDirectory(wikiRoot: URL) -> URL {
-    wikiRoot.standardizedFileURL
-}
-
 private func wikiClustersDirectory(wikiRoot: URL) -> URL {
     wikiRoot.appendingPathComponent("clusters").standardizedFileURL
 }

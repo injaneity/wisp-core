@@ -30,7 +30,6 @@ enum CodexOAuth {
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
             "Authorization": "Bearer \(token)",
-            "OpenAI-Beta": "responses=experimental",
             "chatgpt-account-id": accountID,
             "originator": "wisp",
             "User-Agent": userAgent,

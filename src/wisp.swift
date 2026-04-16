@@ -1026,21 +1026,22 @@ func nonEmptyText(_ value: Any?) -> String? {
 }
 
 func extractOutputText(from responseObject: [String: Any]) -> String {
-    if let text = nonEmptyText(responseObject["output_text"]) ?? nonEmptyText(responseObject["text"]) {
+    if let text = nonEmptyText(responseObject["output_text"]) {
         return text
     }
     guard let output = responseObject["output"] as? [[String: Any]] else {
         return ""
     }
     for item in output {
-        if let text = nonEmptyText(item["text"]) {
-            return text
-        }
         guard let content = item["content"] as? [[String: Any]] else {
             continue
         }
         for part in content {
-            if let text = nonEmptyText(part["output_text"]) ?? nonEmptyText(part["text"]) {
+            let partType = (part["type"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard partType == "output_text" else {
+                continue
+            }
+            if let text = nonEmptyText(part["text"]) {
                 return text
             }
         }
@@ -1103,7 +1104,7 @@ func decodeModelText(from responseData: Data) throws -> DecodedModelText {
             }
             return (true, nil)
         }
-        if (eventType == "response.output_text.done" || eventType == "response.text.done"),
+        if eventType == "response.output_text.done",
            let text = event["text"] as? String,
            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             collectedOutput = text
@@ -1332,17 +1333,11 @@ func extractCacheStats(from responseObject: [String: Any]) -> CacheStats? {
     guard let usage = responseObject["usage"] as? [String: Any] else {
         return nil
     }
-    let inputTokens =
-        (usage["input_tokens"] as? Int) ??
-        (usage["prompt_tokens"] as? Int) ??
-        0
+    let inputTokens = usage["input_tokens"] as? Int ?? 0
     guard inputTokens > 0 else {
         return nil
     }
-    let details =
-        (usage["input_tokens_details"] as? [String: Any]) ??
-        (usage["prompt_tokens_details"] as? [String: Any]) ??
-        [:]
+    let details = usage["input_tokens_details"] as? [String: Any] ?? [:]
     let cachedTokens = details["cached_tokens"] as? Int ?? 0
     let percent = (Double(cachedTokens) / Double(inputTokens)) * 100.0
     return CacheStats(inputTokens: inputTokens, cachedTokens: cachedTokens, percent: percent)
@@ -1403,12 +1398,7 @@ func buildTurnReplayText(payload: [String: String]) throws -> String {
 }
 
 func parseBoolString(_ value: String?) -> Bool {
-    switch value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-    case "true", "1", "yes":
-        return true
-    default:
-        return false
-    }
+    value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "true"
 }
 
 func buildPromptCacheKey(sessionID: String) -> String {
@@ -1675,46 +1665,30 @@ func resolveWorkspaceConfigPaths(repoRoot: URL) -> WorkspaceConfigPaths {
 }
 
 func makeWorkspaceConfigValues(rawValues: [String: String], configRoot: URL) throws -> WorkspaceConfigValues {
-    let resolvedRepoRoot = try resolveConfiguredURL(
-        rawValue: firstConfigValue(rawValues, keys: ["paths.repo_root", "repo_root"]),
+    let resolvedRepoRoot = (try resolveConfiguredURL(
+        rawValue: rawValues["paths.repo_root"],
         baseDirectory: configRoot,
         fieldName: "repo_root",
         defaultURL: configRoot
-    )
-    let resolvedWikiRoot = try resolveConfiguredOptionalURL(
-        rawValue: firstConfigValue(rawValues, keys: ["paths.wiki_root", "wiki_root"]),
+    )) ?? configRoot
+    let resolvedWikiRoot = try resolveConfiguredURL(
+        rawValue: rawValues["paths.wiki_root"],
         baseDirectory: resolvedRepoRoot,
-        fieldName: "wiki_root"
+        fieldName: "wiki_root",
+        defaultURL: nil
     )
     return WorkspaceConfigValues(
         repoRoot: resolvedRepoRoot,
         wikiRoot: resolvedWikiRoot,
-        model: firstConfigValue(rawValues, keys: ["model.name", "model"]),
-        reasoningEffort: firstConfigValue(rawValues, keys: ["model.reasoning_effort", "reasoning_effort"]),
-        baseURL: firstConfigValue(rawValues, keys: ["model.base_url", "base_url"])
+        model: normalizeConfigValue(rawValues["model.name"]),
+        reasoningEffort: normalizeConfigValue(rawValues["model.reasoning_effort"]),
+        baseURL: normalizeConfigValue(rawValues["model.base_url"])
     )
 }
 
-func resolveConfiguredURL(rawValue: String?, baseDirectory: URL, fieldName: String, defaultURL: URL) throws -> URL {
+func resolveConfiguredURL(rawValue: String?, baseDirectory: URL, fieldName: String, defaultURL: URL?) throws -> URL? {
     guard let rawValue = normalizeConfigValue(rawValue) else {
-        return defaultURL.standardizedFileURL
-    }
-    let url: URL
-    if rawValue.hasPrefix("/") {
-        url = URL(fileURLWithPath: rawValue)
-    } else {
-        url = baseDirectory.appendingPathComponent(rawValue)
-    }
-    let standardized = url.standardizedFileURL
-    guard FileManager.default.fileExists(atPath: standardized.path) else {
-        throw AppError.io("Configured \(fieldName) does not exist: \(standardized.path)")
-    }
-    return standardized
-}
-
-func resolveConfiguredOptionalURL(rawValue: String?, baseDirectory: URL, fieldName: String) throws -> URL? {
-    guard let rawValue = normalizeConfigValue(rawValue) else {
-        return nil
+        return defaultURL?.standardizedFileURL
     }
     let url: URL
     if rawValue.hasPrefix("/") {
@@ -1767,15 +1741,6 @@ func parseSimpleYAMLConfig(at url: URL) throws -> [String: String] {
         values[fullKey] = unquoteYAMLScalar(value)
     }
     return values
-}
-
-func firstConfigValue(_ rawValues: [String: String], keys: [String]) -> String? {
-    for key in keys {
-        if let value = normalizeConfigValue(rawValues[key]) {
-            return value
-        }
-    }
-    return nil
 }
 
 func unquoteYAMLScalar(_ value: String) -> String {
