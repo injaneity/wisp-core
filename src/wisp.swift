@@ -8,13 +8,22 @@ struct CLIConfig {
     let codex: CodexSettings
     let promptConfig: PromptConfig
     let sessionID: String
+    let repoRoot: URL
+    let wikiRoot: URL
+    let workspaceConfigPath: URL?
+}
+
+struct InitConfig {
+    let targetRoot: URL
+    let repoRoot: URL
+    let configPath: URL
+    let configExamplePath: URL
 }
 
 struct TurnOutput: Codable {
-    let plan: String
-    let message: String
-    let code: String
-    let is_complete: Bool
+    let message: String?
+    let code: String?
+    let continue_turn: Bool
 }
 
 struct LuaRunOutput: Codable {
@@ -34,7 +43,7 @@ struct ToolResultForModel: Codable {
     let artifact_path: String?
 }
 
-struct BashHelperOutput: Codable {
+struct InternalToolOutput: Codable {
     let status_code: Int
     let stdout_b64: String
     let stderr_b64: String
@@ -50,6 +59,9 @@ struct ModelCallOutput {
     let turn: TurnOutput
     let cacheStats: CacheStats?
     let promptCacheKey: String?
+    let instructionsHash: String
+    let inputHash: String
+    let requestBodyHash: String
 }
 
 struct DecodedModelText {
@@ -70,9 +82,22 @@ struct CodexSettings {
     let reasoningEffort: String
 }
 
+struct WorkspaceConfigValues {
+    let repoRoot: URL
+    let wikiRoot: URL?
+    let model: String?
+    let reasoningEffort: String?
+    let baseURL: String?
+}
+
 struct PromptConfig {
     let systemPrompt: String
     let systemPromptSource: String
+}
+
+struct WorkspaceConfigPaths {
+    let configPath: URL
+    let configExamplePath: URL
 }
 
 struct ResponsesRequest: Encodable {
@@ -111,7 +136,22 @@ struct ResponseSchema: Encodable {
 }
 
 struct ResponseSchemaProperty: Encodable {
-    let type: String
+    let type: ResponseSchemaType
+}
+
+enum ResponseSchemaType: Encodable {
+    case single(String)
+    case multi([String])
+
+    func encode(to encoder: Encoder) throws {
+        var singleValue = encoder.singleValueContainer()
+        switch self {
+        case .single(let value):
+            try singleValue.encode(value)
+        case .multi(let values):
+            try singleValue.encode(values)
+        }
+    }
 }
 
 struct ResponseMessageContent: Encodable {
@@ -183,6 +223,7 @@ enum AppError: Error, CustomStringConvertible {
 }
 
 let promptFileName = "prompt.md"
+let workspaceConfigRelativePath = ".wisp/config.yaml"
 let readOrBashMaxLines = 2_000
 let readOrBashMaxBytes = 50 * 1024
 
@@ -198,6 +239,9 @@ struct WispMain {
             try resetSessionLog(logPath: config.logPath)
             if config.verbose {
                 print("[verbose] prompts.system: \(config.promptConfig.systemPromptSource)")
+                if let workspaceConfigPath = config.workspaceConfigPath {
+                    print("[verbose] workspace.config: \(workspaceConfigPath.path)")
+                }
             }
             print("session initialized (previous session archived if present).")
             print("wisp started. Type `exit` to quit and clear session, or `restart` to clear session and continue.")
@@ -235,6 +279,10 @@ func runInternalToolModeIfRequested() throws -> Bool {
         try runBashHelperMode(args: Array(args.dropFirst()))
         return true
     }
+    if mode == "--tool-write" {
+        try runWriteHelperMode(args: Array(args.dropFirst()))
+        return true
+    }
     return false
 }
 
@@ -269,10 +317,69 @@ func runBashHelperMode(args: [String]) throws {
     let command = try String(contentsOfFile: commandFile, encoding: .utf8)
     let result = try runBashCommand(command: command, timeoutMs: timeoutMs)
     let encoded = try encodeJSON(
-        BashHelperOutput(
+        InternalToolOutput(
             status_code: result.statusCode,
             stdout_b64: Data(result.stdout.utf8).base64EncodedString(),
             stderr_b64: Data(result.stderr.utf8).base64EncodedString()
+        )
+    )
+    print(encoded)
+}
+
+func runWriteHelperMode(args: [String]) throws {
+    var path: String?
+    var contentFile: String?
+    var index = 0
+    while index < args.count {
+        let arg = args[index]
+        switch arg {
+        case "--path":
+            index += 1
+            guard index < args.count else {
+                throw AppError.io("Missing value for --path")
+            }
+            path = args[index]
+        case "--content-file":
+            index += 1
+            guard index < args.count else {
+                throw AppError.io("Missing value for --content-file")
+            }
+            contentFile = args[index]
+        default:
+            throw AppError.io("Unknown --tool-write argument: \(arg)")
+        }
+        index += 1
+    }
+
+    guard let path else {
+        throw AppError.io("--tool-write requires --path")
+    }
+    guard let contentFile else {
+        throw AppError.io("--tool-write requires --content-file")
+    }
+
+    let content = try String(contentsOfFile: contentFile, encoding: .utf8)
+    let context = try loadWikiRuntimeContextFromEnvironment()
+    let stdout: String
+    do {
+        stdout = try handleWikiWrite(rawPath: path, content: content, context: context)
+    } catch {
+        let encoded = try encodeJSON(
+            InternalToolOutput(
+                status_code: 1,
+                stdout_b64: Data().base64EncodedString(),
+                stderr_b64: Data(String(describing: error).utf8).base64EncodedString()
+            )
+        )
+        print(encoded)
+        return
+    }
+
+    let encoded = try encodeJSON(
+        InternalToolOutput(
+            status_code: 0,
+            stdout_b64: Data(stdout.utf8).base64EncodedString(),
+            stderr_b64: Data().base64EncodedString()
         )
     )
     print(encoded)
@@ -443,10 +550,6 @@ func resolveBundledRGDirectory() -> String? {
 func parseArgs() throws -> CLIConfig {
     let args = CommandLine.arguments.dropFirst()
     var verbose = false
-    let logPath = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        .appendingPathComponent(".wisp/session.jsonl")
-    let promptsDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        .appendingPathComponent("prompts")
     var index = args.startIndex
 
     while index < args.endIndex {
@@ -460,14 +563,40 @@ func parseArgs() throws -> CLIConfig {
         }
     }
 
-    let codex = resolveCodexSettings()
-    let promptConfig = try loadPromptConfig(promptsDir: promptsDir)
+    var workspaceConfig = try resolveWorkspaceConfig(startingAt: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+    if workspaceConfig.wikiRoot == nil {
+        let targetRoot = try promptForWikiRoot()
+        let configPaths = resolveWorkspaceConfigPaths(repoRoot: workspaceConfig.repoRoot)
+        try runInit(
+            config: InitConfig(
+                targetRoot: targetRoot,
+                repoRoot: workspaceConfig.repoRoot,
+                configPath: configPaths.configPath,
+                configExamplePath: configPaths.configExamplePath
+            )
+        )
+        workspaceConfig = try resolveWorkspaceConfig(startingAt: workspaceConfig.repoRoot)
+    }
+    guard let wikiRoot = workspaceConfig.wikiRoot else {
+        throw AppError.io("Wiki root is still unset after initialization.")
+    }
+    let promptsDir = workspaceConfig.repoRoot.appendingPathComponent("prompts")
+    let codex = resolveCodexSettings(workspaceConfig: workspaceConfig)
+    let promptConfig = try loadPromptConfig(
+        promptsDir: promptsDir,
+        repoRoot: workspaceConfig.repoRoot,
+        wikiRoot: wikiRoot
+    )
+    let logPath = wikiRoot.appendingPathComponent(".wisp/session.jsonl")
     return CLIConfig(
         verbose: verbose,
         logPath: logPath,
         codex: codex,
         promptConfig: promptConfig,
-        sessionID: UUID().uuidString.lowercased()
+        sessionID: UUID().uuidString.lowercased(),
+        repoRoot: workspaceConfig.repoRoot,
+        wikiRoot: wikiRoot,
+        workspaceConfigPath: workspaceConfig.configPath
     )
 }
 
@@ -532,6 +661,9 @@ func processUserTurn(_ userMessage: String, config: CLIConfig) throws {
         var modelCallPayload: [String: String] = [
             "duration_ms": String(modelResult.durationMs)
         ]
+        modelCallPayload["instructions_hash"] = modelResult.value.instructionsHash
+        modelCallPayload["input_hash"] = modelResult.value.inputHash
+        modelCallPayload["request_body_hash"] = modelResult.value.requestBodyHash
         if let key = modelResult.value.promptCacheKey, !key.isEmpty {
             modelCallPayload["prompt_cache_key"] = key
         }
@@ -542,32 +674,33 @@ func processUserTurn(_ userMessage: String, config: CLIConfig) throws {
         }
         try logEvent(type: "model_call", payload: modelCallPayload, config: config)
 
-        var turn = modelResult.value.turn
-        if turn.is_complete && !turn.code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            turn = TurnOutput(
-                plan: turn.plan,
-                message: turn.message,
-                code: turn.code,
-                is_complete: false
-            )
-        }
+        let turn = try validateTurnOutput(
+            modelResult.value.turn,
+            userMessage: userMessage,
+            replayEventCount: replayResult.value.eventCount
+        )
 
         let modelPayload: [String: String] = [
-            "plan": turn.plan,
-            "message": turn.message,
-            "code": turn.code,
-            "is_complete": String(turn.is_complete)
+            "message": turn.message ?? "",
+            "code": turn.code ?? "",
+            "continue_turn": String(turn.continue_turn)
         ]
         try logEvent(type: "model_response", payload: modelPayload, config: config)
 
-        let trimmedCode = turn.code.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedMessage = turn.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let trimmedCode = turn.code?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedMessage.isEmpty {
+            print("assistant> \(trimmedMessage)")
+        }
         if trimmedCode.isEmpty {
-            print("assistant> \(turn.message)")
+            if turn.continue_turn {
+                continue
+            }
             return
         }
 
         let callID = "call_\(UUID().uuidString.lowercased())"
-        try logEvent(type: "tool_call", payload: ["code": turn.code, "call_id": callID], config: config)
+        try logEvent(type: "tool_call", payload: ["code": trimmedCode, "call_id": callID], config: config)
         try logEvent(type: "step", payload: ["name": "lua_runtime", "state": "started"], config: config)
         let luaStart = Date()
         var luaOutput = LuaRunOutput(
@@ -580,7 +713,11 @@ func processUserTurn(_ userMessage: String, config: CLIConfig) throws {
         var luaDurationMs = 0
         do {
             let luaResult = try timed {
-                try executeLua(code: turn.code)
+                try executeLua(
+                    code: trimmedCode,
+                    runtimeRoot: config.repoRoot,
+                    workspaceRoot: config.wikiRoot
+                )
             }
             luaOutput = luaResult.value
             luaDurationMs = luaResult.durationMs
@@ -664,7 +801,8 @@ func callModel(
 
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
-    request.httpBody = try encoder.encode(payload)
+    let requestBody = try encoder.encode(payload)
+    request.httpBody = requestBody
     let responseData = try httpRequest(request)
     let decoded = try decodeModelText(from: responseData)
     guard let data = decoded.text.data(using: .utf8) else {
@@ -675,7 +813,10 @@ func callModel(
         return ModelCallOutput(
             turn: turn,
             cacheStats: decoded.cacheStats,
-            promptCacheKey: promptCacheKey
+            promptCacheKey: promptCacheKey,
+            instructionsHash: sha256Hex(instructions),
+            inputHash: sha256HexForEncodable(replayInputItems),
+            requestBodyHash: sha256Hex(data: requestBody)
         )
     } catch {
         throw AppError.invalidModelResponse("Could not decode TurnOutput. Raw text: \(decoded.text)")
@@ -698,15 +839,24 @@ func loadCodexOAuthToken(authFile: URL) throws -> String {
     return token
 }
 
-func executeLua(code: String) throws -> LuaRunOutput {
+func executeLua(code: String, runtimeRoot: URL, workspaceRoot: URL) throws -> LuaRunOutput {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-    let runtimePath = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    let runtimePath = runtimeRoot
         .appendingPathComponent("scripts/lua_runtime.lua").path
     process.arguments = ["lua", runtimePath]
+    let codexSettings = resolveCodexSettings(
+        workspaceConfig: try resolveWorkspaceConfig(startingAt: runtimeRoot)
+    )
     var runtimeEnv = ProcessInfo.processInfo.environment
     runtimeEnv["WISP_CHAT_HELPER_BIN"] = CommandLine.arguments[0]
-    runtimeEnv["WISP_WORKSPACE_ROOT"] = FileManager.default.currentDirectoryPath
+    runtimeEnv["WISP_WORKSPACE_ROOT"] = workspaceRoot.path
+    runtimeEnv["WISP_REPO_ROOT"] = runtimeRoot.path
+    runtimeEnv["WISP_WIKI_ROOT"] = workspaceRoot.path
+    runtimeEnv["WISP_CODEX_BASE_URL"] = codexSettings.baseURL
+    runtimeEnv["WISP_CODEX_AUTH_FILE"] = codexSettings.authFile.path
+    runtimeEnv["WISP_CODEX_MODEL"] = codexSettings.model
+    runtimeEnv["WISP_CODEX_REASONING_EFFORT"] = codexSettings.reasoningEffort
     process.environment = runtimeEnv
 
     let inputPipe = Pipe()
@@ -1100,26 +1250,25 @@ func makeResponseSchema() -> ResponseSchema {
     ResponseSchema(
         type: "object",
         properties: [
-            "plan": ResponseSchemaProperty(type: "string"),
-            "message": ResponseSchemaProperty(type: "string"),
-            "code": ResponseSchemaProperty(type: "string"),
-            "is_complete": ResponseSchemaProperty(type: "boolean")
+            "message": ResponseSchemaProperty(type: .multi(["string", "null"])),
+            "code": ResponseSchemaProperty(type: .multi(["string", "null"])),
+            "continue_turn": ResponseSchemaProperty(type: .single("boolean"))
         ],
-        required: ["plan", "message", "code", "is_complete"],
+        required: ["message", "code", "continue_turn"],
         additionalProperties: false
     )
 }
 
-func resolveCodexSettings() -> CodexSettings {
+func resolveCodexSettings(workspaceConfig: ResolvedWorkspaceConfig) -> CodexSettings {
     let env = ProcessInfo.processInfo.environment
     let home = env["HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path
     let authFile = URL(fileURLWithPath: home).appendingPathComponent(".codex/auth.json")
 
     return CodexSettings(
-        baseURL: "https://chatgpt.com/backend-api/codex",
+        baseURL: workspaceConfig.values.baseURL ?? "https://chatgpt.com/backend-api/codex",
         authFile: authFile,
-        model: "gpt-5.4-mini",
-        reasoningEffort: "medium"
+        model: workspaceConfig.values.model ?? "gpt-5.4",
+        reasoningEffort: workspaceConfig.values.reasoningEffort ?? "medium"
     )
 }
 
@@ -1154,6 +1303,21 @@ func formatPercent(_ value: Double) -> String {
     String(format: "%.2f%%", value)
 }
 
+func sha256Hex(_ text: String) -> String {
+    sha256Hex(data: Data(text.utf8))
+}
+
+func sha256HexForEncodable<T: Encodable>(_ value: T) -> String {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let data = (try? encoder.encode(value)) ?? Data()
+    return sha256Hex(data: data)
+}
+
+func sha256Hex(data: Data) -> String {
+    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+}
+
 func compactText(_ text: String, limit: Int) -> String {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard trimmed.count > limit else { return trimmed }
@@ -1172,18 +1336,17 @@ func serializeJSONObject(_ object: Any) -> String {
 }
 
 func buildTurnReplayText(payload: [String: String]) throws -> String {
-    let plan = payload["plan"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    let message = payload["message"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    let code = payload["code"] ?? ""
-    if plan.isEmpty && message.isEmpty && code.isEmpty {
+    let message = payload["message"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let code = payload["code"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let continueTurn = parseBoolString(payload["continue_turn"])
+    if (message ?? "").isEmpty && (code ?? "").isEmpty && !continueTurn {
         return ""
     }
     return try encodeJSON(
         TurnOutput(
-            plan: plan,
-            message: message,
-            code: code,
-            is_complete: parseBoolString(payload["is_complete"])
+            message: (message ?? "").isEmpty ? nil : message,
+            code: (code ?? "").isEmpty ? nil : code,
+            continue_turn: continueTurn
         )
     )
 }
@@ -1219,6 +1382,62 @@ func buildAssistantOutputMessageItem(text: String) -> ResponseInputItem {
         role: "assistant",
         content: [ResponseMessageContent(type: "output_text", text: text)]
     )
+}
+
+func validateTurnOutput(_ turn: TurnOutput, userMessage: String, replayEventCount: Int) throws -> TurnOutput {
+    let message = normalizeOptionalTurnField(turn.message)
+    let code = normalizeOptionalTurnField(turn.code)
+
+    if message == nil && code == nil {
+        throw AppError.invalidModelResponse("Turn requires message or code")
+    }
+    if code != nil && !turn.continue_turn {
+        throw AppError.invalidModelResponse("Turn with code must set continue_turn to true")
+    }
+    if !turn.continue_turn && code == nil && requiresMutationBeforeFinal(userMessage: userMessage, replayEventCount: replayEventCount) {
+        throw AppError.invalidModelResponse("This turn requires a tool call before a final response")
+    }
+
+    return TurnOutput(
+        message: message,
+        code: code,
+        continue_turn: turn.continue_turn
+    )
+}
+
+func normalizeOptionalTurnField(_ value: String?) -> String? {
+    guard let value else { return nil }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+}
+
+func requiresMutationBeforeFinal(userMessage: String, replayEventCount: Int) -> Bool {
+    guard replayEventCount <= 1 else {
+        return false
+    }
+    let trimmed = userMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty {
+        return false
+    }
+    let lowered = trimmed.lowercased()
+    if lowered.hasPrefix("http://") || lowered.hasPrefix("https://") {
+        return true
+    }
+    if lowered.hasPrefix("www.") {
+        return true
+    }
+    if lowered.contains("\n") {
+        return true
+    }
+    let ingestMarkers = ["attach", "ingest", "save this", "add this to the wiki", "put this in the wiki"]
+    if ingestMarkers.contains(where: { lowered.contains($0) }) {
+        return true
+    }
+    let pathExtensions = [".pdf", ".md", ".txt", ".html", ".docx"]
+    if pathExtensions.contains(where: { lowered.hasSuffix($0) }) {
+        return true
+    }
+    return false
 }
 
 func buildToolResultForModel(from output: LuaRunOutput, logPath: URL) throws -> ToolResultForModel {
@@ -1292,12 +1511,13 @@ func isoFileNow() -> String {
     return formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
 }
 
-func loadPromptConfig(promptsDir: URL) throws -> PromptConfig {
+func loadPromptConfig(promptsDir: URL, repoRoot: URL, wikiRoot: URL) throws -> PromptConfig {
     let promptPath = promptsDir.appendingPathComponent(promptFileName)
     let promptTemplate = try loadRequiredTextFile(promptPath, name: promptFileName)
     let systemPrompt = buildSystemPrompt(
         promptTemplate: promptTemplate,
-        workingDirectory: FileManager.default.currentDirectoryPath,
+        repoRoot: repoRoot.path,
+        wikiRoot: wikiRoot.path,
         now: Date()
     )
 
@@ -1307,35 +1527,246 @@ func loadPromptConfig(promptsDir: URL) throws -> PromptConfig {
     )
 }
 
-func buildSystemPrompt(promptTemplate: String, workingDirectory: String, now: Date) -> String {
-    let trimmedTemplate = promptTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
-    let statusBlock = formatStatusBlock(workingDirectory: workingDirectory, now: now)
+func buildSystemPrompt(promptTemplate: String, repoRoot: String, wikiRoot: String, now: Date) -> String {
+    var trimmedTemplate = promptTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
+    trimmedTemplate = trimmedTemplate.replacingOccurrences(of: "[WISP_REPO_ROOT]", with: repoRoot)
+    trimmedTemplate = trimmedTemplate.replacingOccurrences(of: "[WISP_WIKI_ROOT]", with: wikiRoot)
+    let statusBlock = formatStatusBlock(repoRoot: repoRoot, wikiRoot: wikiRoot, now: now)
     return trimmedTemplate + "\n\n" + statusBlock
 }
 
-func formatStatusBlock(workingDirectory: String, now: Date) -> String {
+func formatStatusBlock(repoRoot: String, wikiRoot: String, now: Date) -> String {
     _ = now
     var lines = ["Status:"]
-    let trimmedWorkingDirectory = workingDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
-    if !trimmedWorkingDirectory.isEmpty {
-        lines.append("- working directory: \(trimmedWorkingDirectory)")
-        lines.append("- writable workspace: \(trimmedWorkingDirectory)")
+    let trimmedRepoRoot = repoRoot.trimmingCharacters(in: .whitespacesAndNewlines)
+    let trimmedWikiRoot = wikiRoot.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmedRepoRoot.isEmpty {
+        lines.append("- wisp repo root: \(trimmedRepoRoot)")
+    }
+    if !trimmedWikiRoot.isEmpty {
+        lines.append("- wiki root: \(trimmedWikiRoot)")
+        lines.append("- writable workspace: \(trimmedWikiRoot)")
     }
 
     return lines.joined(separator: "\n")
 }
 
+struct ResolvedWorkspaceConfig {
+    let configPath: URL?
+    let values: WorkspaceConfigValues
+    let repoRoot: URL
+    let wikiRoot: URL?
+}
+
+func resolveWorkspaceConfig(startingAt: URL) throws -> ResolvedWorkspaceConfig {
+    let defaultRoot = startingAt.standardizedFileURL
+    if let configPath = findWorkspaceConfigPath(startingAt: defaultRoot) {
+        let configRoot = configPath.deletingLastPathComponent().deletingLastPathComponent().standardizedFileURL
+        let rawValues = try parseSimpleYAMLConfig(at: configPath)
+        let values = try makeWorkspaceConfigValues(rawValues: rawValues, configRoot: configRoot)
+        return ResolvedWorkspaceConfig(
+            configPath: configPath,
+            values: values,
+            repoRoot: values.repoRoot,
+            wikiRoot: values.wikiRoot
+        )
+    }
+
+    let values = WorkspaceConfigValues(
+        repoRoot: defaultRoot,
+        wikiRoot: nil,
+        model: nil,
+        reasoningEffort: nil,
+        baseURL: nil
+    )
+    return ResolvedWorkspaceConfig(
+        configPath: nil,
+        values: values,
+        repoRoot: values.repoRoot,
+        wikiRoot: values.wikiRoot
+    )
+}
+
+func findWorkspaceConfigPath(startingAt: URL) -> URL? {
+    var current = startingAt.standardizedFileURL
+    let fm = FileManager.default
+    while true {
+        let candidate = current.appendingPathComponent(workspaceConfigRelativePath)
+        if fm.fileExists(atPath: candidate.path) {
+            return candidate
+        }
+        let parent = current.deletingLastPathComponent()
+        if parent.path == current.path {
+            return nil
+        }
+        current = parent
+    }
+}
+
+func resolveWorkspaceConfigPaths(repoRoot: URL) -> WorkspaceConfigPaths {
+    let dotWisp = repoRoot.appendingPathComponent(".wisp")
+    return WorkspaceConfigPaths(
+        configPath: dotWisp.appendingPathComponent("config.yaml"),
+        configExamplePath: dotWisp.appendingPathComponent("config.yaml.example")
+    )
+}
+
+func makeWorkspaceConfigValues(rawValues: [String: String], configRoot: URL) throws -> WorkspaceConfigValues {
+    let resolvedRepoRoot = try resolveConfiguredURL(
+        rawValue: firstConfigValue(rawValues, keys: ["paths.repo_root", "repo_root"]),
+        baseDirectory: configRoot,
+        fieldName: "repo_root",
+        defaultURL: configRoot
+    )
+    let resolvedWikiRoot = try resolveConfiguredOptionalURL(
+        rawValue: firstConfigValue(rawValues, keys: ["paths.wiki_root", "wiki_root"]),
+        baseDirectory: resolvedRepoRoot,
+        fieldName: "wiki_root"
+    )
+    return WorkspaceConfigValues(
+        repoRoot: resolvedRepoRoot,
+        wikiRoot: resolvedWikiRoot,
+        model: firstConfigValue(rawValues, keys: ["model.name", "model"]),
+        reasoningEffort: firstConfigValue(rawValues, keys: ["model.reasoning_effort", "reasoning_effort"]),
+        baseURL: firstConfigValue(rawValues, keys: ["model.base_url", "base_url"])
+    )
+}
+
+func resolveConfiguredURL(rawValue: String?, baseDirectory: URL, fieldName: String, defaultURL: URL) throws -> URL {
+    guard let rawValue = normalizeConfigValue(rawValue) else {
+        return defaultURL.standardizedFileURL
+    }
+    let url: URL
+    if rawValue.hasPrefix("/") {
+        url = URL(fileURLWithPath: rawValue)
+    } else {
+        url = baseDirectory.appendingPathComponent(rawValue)
+    }
+    let standardized = url.standardizedFileURL
+    guard FileManager.default.fileExists(atPath: standardized.path) else {
+        throw AppError.io("Configured \(fieldName) does not exist: \(standardized.path)")
+    }
+    return standardized
+}
+
+func resolveConfiguredOptionalURL(rawValue: String?, baseDirectory: URL, fieldName: String) throws -> URL? {
+    guard let rawValue = normalizeConfigValue(rawValue) else {
+        return nil
+    }
+    let url: URL
+    if rawValue.hasPrefix("/") {
+        url = URL(fileURLWithPath: rawValue)
+    } else {
+        url = baseDirectory.appendingPathComponent(rawValue)
+    }
+    let standardized = url.standardizedFileURL
+    guard FileManager.default.fileExists(atPath: standardized.path) else {
+        throw AppError.io("Configured \(fieldName) does not exist: \(standardized.path)")
+    }
+    return standardized
+}
+
+func parseSimpleYAMLConfig(at url: URL) throws -> [String: String] {
+    let text = try loadRequiredTextFile(url, name: url.lastPathComponent)
+    var values: [String: String] = [:]
+    var sectionStack: [(indent: Int, key: String)] = []
+
+    for rawLine in text.components(separatedBy: .newlines) {
+        if rawLine.trimmingCharacters(in: .whitespaces).isEmpty {
+            continue
+        }
+        let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("#") {
+            continue
+        }
+
+        let indent = rawLine.prefix { $0 == " " }.count
+        let line = trimmed
+        if line.isEmpty || line.hasPrefix("#") {
+            continue
+        }
+        guard let separator = line.firstIndex(of: ":") else {
+            throw AppError.io("Invalid config line in \(url.path): \(rawLine)")
+        }
+        while let last = sectionStack.last, last.indent >= indent {
+            sectionStack.removeLast()
+        }
+
+        let key = String(line[..<separator]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let valueStart = line.index(after: separator)
+        let value = String(line[valueStart...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let fullKeyPrefix = sectionStack.map(\.key)
+        let fullKey = (fullKeyPrefix + [key]).joined(separator: ".")
+        if value.isEmpty {
+            sectionStack.append((indent: indent, key: key))
+            continue
+        }
+        values[fullKey] = unquoteYAMLScalar(value)
+    }
+    return values
+}
+
+func firstConfigValue(_ rawValues: [String: String], keys: [String]) -> String? {
+    for key in keys {
+        if let value = normalizeConfigValue(rawValues[key]) {
+            return value
+        }
+    }
+    return nil
+}
+
+func unquoteYAMLScalar(_ value: String) -> String {
+    guard value.count >= 2 else { return value }
+    if (value.hasPrefix("\"") && value.hasSuffix("\"")) || (value.hasPrefix("'") && value.hasSuffix("'")) {
+        let start = value.index(after: value.startIndex)
+        let end = value.index(before: value.endIndex)
+        return String(value[start..<end])
+            .replacingOccurrences(of: "\\\"", with: "\"")
+            .replacingOccurrences(of: "\\\\", with: "\\")
+    }
+    return value
+}
+
+func normalizeConfigValue(_ value: String?) -> String? {
+    guard let value else { return nil }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+}
+
+func makeAbsoluteURL(path: String) -> URL {
+    let raw = path.trimmingCharacters(in: .whitespacesAndNewlines)
+    if raw.hasPrefix("/") {
+        return URL(fileURLWithPath: raw).standardizedFileURL
+    }
+    return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        .appendingPathComponent(raw)
+        .standardizedFileURL
+}
+
+func promptForWikiRoot() throws -> URL {
+    print("wiki root is not configured.")
+    print("enter wiki directory (absolute path preferred): ", terminator: "")
+    guard let line = readLine() else {
+        throw AppError.io("No wiki directory provided.")
+    }
+    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+        throw AppError.io("Wiki directory cannot be empty.")
+    }
+    return makeAbsoluteURL(path: trimmed)
+}
+
 func loadRequiredTextFile(_ url: URL, name: String) throws -> String {
     guard FileManager.default.fileExists(atPath: url.path) else {
-        throw AppError.io("Missing prompt file: \(name) at \(url.path)")
+        throw AppError.io("Missing file: \(name) at \(url.path)")
     }
     guard let data = FileManager.default.contents(atPath: url.path),
           let text = String(data: data, encoding: .utf8) else {
-        throw AppError.io("Could not read prompt file: \(name) at \(url.path)")
+        throw AppError.io("Could not read file: \(name) at \(url.path)")
     }
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed.isEmpty {
-        throw AppError.io("Prompt file is empty: \(name) at \(url.path)")
+        throw AppError.io("File is empty: \(name) at \(url.path)")
     }
     return text
 }
@@ -1372,10 +1803,12 @@ func formatVerboseLines(type: String, payload: [String: String]) -> [String] {
         lines.append("[verbose] model_cache: unavailable")
         return lines
     case "model_response":
-        let plan = payload["plan"] ?? ""
+        let continueTurn = payload["continue_turn"] ?? "false"
+        let message = payload["message"] ?? ""
         return [
-            "[verbose] model_response.plan:",
-            indentMultiline(plan)
+            "[verbose] model_response.continue_turn: \(continueTurn)",
+            "[verbose] model_response.message:",
+            indentMultiline(message)
         ]
     case "tool_call":
         return [

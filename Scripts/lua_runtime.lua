@@ -272,16 +272,34 @@ function read(path, offset, limit)
 end
 
 function write(path, content)
-    local resolved = ensure_writable_path(path, "write")
-    local data = content or ""
-    local file = io.open(resolved, "w")
-    if not file then
-        error("write: cannot open path (create parent directories first): " .. tostring(resolved))
+    if helper_bin == "" then
+        error("write: helper binary is not configured")
     end
-    file:write(data)
-    file:close()
-    local msg = "Wrote " .. tostring(#data) .. " bytes to " .. resolved
-    return contract(0, msg, "", "head")
+
+    local data = content or ""
+    local tmp = os.tmpname()
+    local content_file = io.open(tmp, "w")
+    if not content_file then
+        error("write: could not create temp content file")
+    end
+    content_file:write(data)
+    content_file:close()
+
+    local helper_cmd = quoted(helper_bin)
+        .. " --tool-write --path " .. quoted(path or "")
+        .. " --content-file " .. quoted(tmp)
+    local status, raw = run_helper(helper_cmd)
+    os.remove(tmp)
+    if status ~= 0 then
+        error("write: helper failed: " .. tostring(raw))
+    end
+
+    local tool_status = parse_helper_json_number(raw, "status_code") or 1
+    local stdout_b64 = parse_helper_json_string(raw, "stdout_b64") or ""
+    local stderr_b64 = parse_helper_json_string(raw, "stderr_b64") or ""
+    local stdout = base64_decode(stdout_b64)
+    local stderr = base64_decode(stderr_b64)
+    return contract(tool_status, stdout, stderr, "head")
 end
 
 local function build_diff(path, old_content, new_content)
@@ -325,54 +343,37 @@ local function build_diff(path, old_content, new_content)
 end
 
 function edit(path, old_text, new_text)
-    if type(old_text) ~= "string" or old_text == "" then
-        error("edit: old_text must be a non-empty string")
-    end
-    if type(new_text) ~= "string" then
-        new_text = tostring(new_text or "")
-    end
-
-    local resolved = ensure_writable_path(path, "edit")
+    local resolved = resolve_path(path)
     local file = io.open(resolved, "r")
     if not file then
         error("edit: cannot open path: " .. tostring(resolved))
     end
-    local content = file:read("*a") or ""
+    local current = file:read("*a") or ""
     file:close()
 
-    local first_s, first_e = nil, nil
-    local count = 0
-    local start_at = 1
-    while true do
-        local s, e = string.find(content, old_text, start_at, true)
-        if not s then
-            break
-        end
-        count = count + 1
-        if not first_s then
-            first_s = s
-            first_e = e
-        end
-        start_at = e + 1
+    local needle = old_text or ""
+    local replacement = new_text or ""
+    if needle == "" then
+        error("edit: old_text must be non-empty")
     end
 
-    if count == 0 then
-        error("edit: old_text not found in " .. resolved)
+    local first_start, first_end = current:find(needle, 1, true)
+    if not first_start then
+        error("edit: old_text not found in path: " .. tostring(resolved))
     end
-    if count > 1 then
-        error("edit: ambiguous match in " .. resolved .. " (found " .. tostring(count) .. " occurrences)")
+    local second_start = current:find(needle, first_end + 1, true)
+    if second_start then
+        error("edit: old_text matched multiple locations in path: " .. tostring(resolved))
     end
 
-    local updated = content:sub(1, first_s - 1) .. new_text .. content:sub(first_e + 1)
-    local out = io.open(resolved, "w")
-    if not out then
-        error("edit: cannot write path: " .. tostring(resolved))
-    end
-    out:write(updated)
-    out:close()
-
-    local diff = build_diff(resolved, content, updated)
-    return contract(0, diff, "", "head")
+    local updated = current:sub(1, first_start - 1) .. replacement .. current:sub(first_end + 1)
+    local write_result = write(path, updated)
+    return contract(
+        write_result.status_code,
+        build_diff(resolved, current, updated),
+        write_result.stderr,
+        "head"
+    )
 end
 
 local function emit(status_code, runtime_duration_ms, stdout, stderr, truncation_mode)

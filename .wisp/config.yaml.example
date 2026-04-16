@@ -1,0 +1,7 @@
+# Wisp workspace configuration
+paths:
+  repo_root: "/Users/SG4195/Documents/other/wisp-core"
+  wiki_root: ""
+model:
+  name: "gpt-5.4"
+  reasoning_effort: "medium"
