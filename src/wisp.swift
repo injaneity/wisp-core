@@ -1310,27 +1310,13 @@ func buildSystemPrompt(promptTemplate: String, workingDirectory: String, now: Da
 }
 
 func formatStatusBlock(workingDirectory: String, now: Date) -> String {
+    _ = now
     var lines = ["Status:"]
     let trimmedWorkingDirectory = workingDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
     if !trimmedWorkingDirectory.isEmpty {
         lines.append("- working directory: \(trimmedWorkingDirectory)")
         lines.append("- writable workspace: \(trimmedWorkingDirectory)")
     }
-
-    let calendar = Calendar.current
-    let dateFormatter = DateFormatter()
-    dateFormatter.calendar = calendar
-    dateFormatter.locale = Locale(identifier: "en_US_POSIX")
-    dateFormatter.timeZone = .current
-
-    dateFormatter.dateFormat = "yyyy-MM-dd"
-    lines.append("- local date: \(dateFormatter.string(from: now))")
-
-    dateFormatter.dateFormat = "HH:mm:ss"
-    lines.append("- local time: \(dateFormatter.string(from: now))")
-
-    let timezone = TimeZone.current.identifier.trimmingCharacters(in: .whitespacesAndNewlines)
-    lines.append("- local timezone: \(timezone.isEmpty ? "unknown" : timezone)")
 
     return lines.joined(separator: "\n")
 }
