@@ -18,7 +18,9 @@ struct TurnOutput: Codable {
 
 struct LuaRunOutput: Codable {
     let status_code: Int
-    let text: String
+    let stdout: String
+    let stderr: String
+    let truncation_mode: String
     let runtime_duration_ms: Int
 }
 
@@ -29,6 +31,12 @@ struct ToolResultForModel: Codable {
     let truncated: Bool
     let total_bytes: Int
     let artifact_path: String?
+}
+
+struct BashHelperOutput: Codable {
+    let status_code: Int
+    let stdout_b64: String
+    let stderr_b64: String
 }
 
 struct CacheStats {
@@ -74,6 +82,7 @@ struct ResponsesRequest: Encodable {
     let stream: Bool
     let reasoning: ResponsesReasoning
     let input: [ResponseInputItem]
+    let include: [String]
     let text: ResponsesTextConfig
 }
 
@@ -173,11 +182,16 @@ enum AppError: Error, CustomStringConvertible {
 }
 
 let promptFileName = "prompt.md"
+let readOrBashMaxLines = 2_000
+let readOrBashMaxBytes = 50 * 1024
 
 @main
 struct WispChatMain {
     static func main() {
         do {
+            if try runInternalToolModeIfRequested() {
+                return
+            }
             let config = try parseArgs()
             try prepareDirectories(for: config.logPath)
             try resetSessionLog(logPath: config.logPath)
@@ -211,6 +225,218 @@ struct WispChatMain {
             exit(1)
         }
     }
+}
+
+func runInternalToolModeIfRequested() throws -> Bool {
+    let args = Array(CommandLine.arguments.dropFirst())
+    guard let mode = args.first else { return false }
+    if mode == "--tool-bash" {
+        try runBashHelperMode(args: Array(args.dropFirst()))
+        return true
+    }
+    return false
+}
+
+func runBashHelperMode(args: [String]) throws {
+    var commandFile: String?
+    var timeoutMs = 15_000
+    var index = 0
+    while index < args.count {
+        let arg = args[index]
+        switch arg {
+        case "--command-file":
+            index += 1
+            guard index < args.count else {
+                throw AppError.io("Missing value for --command-file")
+            }
+            commandFile = args[index]
+        case "--timeout-ms":
+            index += 1
+            guard index < args.count else {
+                throw AppError.io("Missing value for --timeout-ms")
+            }
+            timeoutMs = max(1, Int(args[index]) ?? timeoutMs)
+        default:
+            throw AppError.io("Unknown --tool-bash argument: \(arg)")
+        }
+        index += 1
+    }
+
+    guard let commandFile else {
+        throw AppError.io("--tool-bash requires --command-file")
+    }
+    let command = try String(contentsOfFile: commandFile, encoding: .utf8)
+    let result = try runBashCommand(command: command, timeoutMs: timeoutMs)
+    let encoded = try encodeJSON(
+        BashHelperOutput(
+            status_code: result.statusCode,
+            stdout_b64: Data(result.stdout.utf8).base64EncodedString(),
+            stderr_b64: Data(result.stderr.utf8).base64EncodedString()
+        )
+    )
+    print(encoded)
+}
+
+func runBashCommand(command: String, timeoutMs: Int) throws -> (statusCode: Int, stdout: String, stderr: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+    process.arguments = ["-lc", command]
+
+    var env = ProcessInfo.processInfo.environment
+    if let rgDir = resolveBundledRGDirectory() {
+        let currentPath = env["PATH"] ?? ""
+        env["PATH"] = rgDir + (currentPath.isEmpty ? "" : ":" + currentPath)
+    }
+    process.environment = env
+
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+    process.standardOutput = stdoutPipe
+    process.standardError = stderrPipe
+
+    do {
+        try process.run()
+    } catch {
+        throw AppError.requestFailed("Failed to run shell command: \(error.localizedDescription)")
+    }
+
+    final class PipeReadState: @unchecked Sendable {
+        let lock = NSLock()
+        var stdoutData = Data()
+        var stderrData = Data()
+    }
+    let readState = PipeReadState()
+    let group = DispatchGroup()
+    group.enter()
+    DispatchQueue.global(qos: .userInitiated).async {
+        let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        readState.lock.lock()
+        readState.stdoutData = data
+        readState.lock.unlock()
+        group.leave()
+    }
+    group.enter()
+    DispatchQueue.global(qos: .userInitiated).async {
+        let data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        readState.lock.lock()
+        readState.stderrData = data
+        readState.lock.unlock()
+        group.leave()
+    }
+
+    let start = Date()
+    var didTimeout = false
+    var sentTerminate = false
+    var terminateAt: Date?
+    while process.isRunning {
+        if !didTimeout {
+            let elapsedMs = Int(Date().timeIntervalSince(start) * 1000)
+            if elapsedMs >= timeoutMs {
+                didTimeout = true
+                sentTerminate = true
+                terminateAt = Date()
+                process.terminate()
+            }
+        } else if sentTerminate, let terminateAt {
+            let drainWindowMs = Int(Date().timeIntervalSince(terminateAt) * 1000)
+            if drainWindowMs >= 1500 {
+                break
+            }
+        }
+        usleep(50_000)
+    }
+    if process.isRunning {
+        kill(process.processIdentifier, SIGKILL)
+    }
+    process.waitUntilExit()
+    group.wait()
+
+    readState.lock.lock()
+    let stdoutData = readState.stdoutData
+    let stderrData = readState.stderrData
+    readState.lock.unlock()
+    let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
+    var stderr = String(data: stderrData, encoding: .utf8) ?? ""
+    if didTimeout {
+        let timeoutMessage = "bash command timed out after \(timeoutMs)ms"
+        stderr = stderr.isEmpty ? timeoutMessage : "\(stderr)\n\(timeoutMessage)"
+    }
+
+    let status = didTimeout ? 124 : Int(process.terminationStatus)
+    return (
+        statusCode: status,
+        stdout: stdout,
+        stderr: stderr
+    )
+}
+
+func truncateText(text: String, mode: String, maxLines: Int, maxBytes: Int) -> (content: String, truncated: Bool) {
+    var content = text
+    var truncated = false
+    let normalizedMode = mode.lowercased()
+
+    let lines = content.split(separator: "\n", omittingEmptySubsequences: false)
+    if lines.count > maxLines {
+        if normalizedMode == "tail" {
+            content = lines.suffix(maxLines).joined(separator: "\n")
+        } else {
+            content = lines.prefix(maxLines).joined(separator: "\n")
+        }
+        truncated = true
+    }
+
+    let byteCount = content.lengthOfBytes(using: .utf8)
+    if byteCount > maxBytes {
+        if normalizedMode == "tail" {
+            content = utf8Suffix(content, maxBytes: maxBytes)
+        } else {
+            content = utf8Prefix(content, maxBytes: maxBytes)
+        }
+        truncated = true
+    }
+
+    return (content, truncated)
+}
+
+func utf8Suffix(_ text: String, maxBytes: Int) -> String {
+    guard maxBytes > 0 else { return "" }
+    var currentBytes = 0
+    var startIndex = text.endIndex
+    var index = text.endIndex
+    while index > text.startIndex {
+        let prevIndex = text.index(before: index)
+        let scalarBytes = text[prevIndex..<index].utf8.count
+        if currentBytes + scalarBytes > maxBytes {
+            break
+        }
+        currentBytes += scalarBytes
+        startIndex = prevIndex
+        index = prevIndex
+    }
+    return String(text[startIndex...])
+}
+
+func resolveBundledRGDirectory() -> String? {
+    let env = ProcessInfo.processInfo.environment
+    if let configured = env["WISP_BUNDLED_RG_DIR"],
+       !configured.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let path = URL(fileURLWithPath: configured).standardizedFileURL.path
+        if FileManager.default.isExecutableFile(atPath: path + "/rg") {
+            return path
+        }
+    }
+
+    let executable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
+    let candidates = [
+        executable.deletingLastPathComponent().appendingPathComponent("bin").path,
+        executable.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Resources/bin").path
+    ]
+    for candidate in candidates {
+        if FileManager.default.isExecutableFile(atPath: candidate + "/rg") {
+            return candidate
+        }
+    }
+    return nil
 }
 
 func parseArgs() throws -> CLIConfig {
@@ -342,7 +568,13 @@ func processUserTurn(_ userMessage: String, config: CLIConfig) throws {
         try logEvent(type: "tool_call", payload: ["code": turn.code, "call_id": callID], config: config)
         try logEvent(type: "step", payload: ["name": "lua_runtime", "state": "started"], config: config)
         let luaStart = Date()
-        var luaOutput = LuaRunOutput(status_code: 1, text: "", runtime_duration_ms: 0)
+        var luaOutput = LuaRunOutput(
+            status_code: 1,
+            stdout: "",
+            stderr: "",
+            truncation_mode: "head",
+            runtime_duration_ms: 0
+        )
         var luaDurationMs = 0
         do {
             let luaResult = try timed {
@@ -364,21 +596,21 @@ func processUserTurn(_ userMessage: String, config: CLIConfig) throws {
             )
             luaOutput = LuaRunOutput(
                 status_code: 1,
-                text: "Lua runtime error: \(error)",
+                stdout: "",
+                stderr: "Lua runtime error: \(error)",
+                truncation_mode: "head",
                 runtime_duration_ms: luaDurationMs
             )
         }
         let modelToolResult = try buildToolResultForModel(from: luaOutput, logPath: config.logPath)
-        let toolResultString = try encodeJSON(modelToolResult)
+        let toolResultString = try encodeReplayToolResult(modelToolResult)
         try logEvent(
             type: "tool_result",
             payload: [
                 "result": toolResultString,
                 "status_code": String(modelToolResult.status_code),
                 "runtime_duration_ms": String(modelToolResult.runtime_duration_ms),
-                "duration_ms": String(luaDurationMs),
                 "call_id": callID,
-                "value": modelToolResult.text,
                 "truncated": String(modelToolResult.truncated),
                 "total_bytes": String(modelToolResult.total_bytes),
                 "artifact_path": modelToolResult.artifact_path ?? ""
@@ -395,15 +627,16 @@ func callModel(
     sessionID: String
 ) throws -> ModelCallOutput {
     let token = try loadCodexOAuthToken(authFile: codex.authFile)
-    let url = URL(string: codex.baseURL + "/responses")!
+    let url = try CodexOAuth.resolveResponsesURL(baseURL: codex.baseURL)
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
-    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
     let instructions = promptConfig.systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-    let promptCacheKey = buildPromptCacheKey(sessionID: sessionID, instructions: instructions)
+    let promptCacheKey = buildPromptCacheKey(sessionID: sessionID)
+    let headers = try CodexOAuth.buildSSEHeaders(token: token, sessionID: promptCacheKey)
+    for (name, value) in headers {
+        request.setValue(value, forHTTPHeaderField: name)
+    }
 
     let payload = ResponsesRequest(
         model: codex.model,
@@ -416,6 +649,7 @@ func callModel(
             summary: "auto"
         ),
         input: replayInputItems,
+        include: ["reasoning.encrypted_content"],
         text: ResponsesTextConfig(
             format: ResponsesTextFormat(
                 type: "json_schema",
@@ -466,6 +700,10 @@ func executeLua(code: String) throws -> LuaRunOutput {
     let runtimePath = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         .appendingPathComponent("Scripts/lua_runtime.lua").path
     process.arguments = ["lua", runtimePath]
+    var runtimeEnv = ProcessInfo.processInfo.environment
+    runtimeEnv["WISP_CHAT_HELPER_BIN"] = CommandLine.arguments[0]
+    runtimeEnv["WISP_WORKSPACE_ROOT"] = FileManager.default.currentDirectoryPath
+    process.environment = runtimeEnv
 
     let inputPipe = Pipe()
     let outputPipe = Pipe()
@@ -533,20 +771,14 @@ func executeLua(code: String) throws -> LuaRunOutput {
                var parsed = try? JSONDecoder().decode(LuaRunOutput.self, from: lineData) {
                 let prefix = allLines[..<i].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
                 if !prefix.isEmpty {
-                    if parsed.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                        parsed.text.trimmingCharacters(in: .whitespacesAndNewlines) == "nil" {
-                        parsed = LuaRunOutput(
-                            status_code: parsed.status_code,
-                            text: prefix,
-                            runtime_duration_ms: parsed.runtime_duration_ms
-                        )
-                    } else {
-                        parsed = LuaRunOutput(
-                            status_code: parsed.status_code,
-                            text: prefix + "\n" + parsed.text,
-                            runtime_duration_ms: parsed.runtime_duration_ms
-                        )
-                    }
+                    let mergedStdout = parsed.stdout.isEmpty ? prefix : prefix + "\n" + parsed.stdout
+                    parsed = LuaRunOutput(
+                        status_code: parsed.status_code,
+                        stdout: mergedStdout,
+                        stderr: parsed.stderr,
+                        truncation_mode: parsed.truncation_mode,
+                        runtime_duration_ms: parsed.runtime_duration_ms
+                    )
                 }
                 return parsed
             }
@@ -809,9 +1041,7 @@ func buildSessionInputItems(logPath: URL) throws -> (inputItems: [ResponseInputI
             let arguments = try encodeJSON(LuaExecArguments(name: "lua.exec", args: code))
             inputItems.append(.functionCall(callID: callID, name: "wisp_code", arguments: arguments))
         case "tool_result":
-            let output = event.payload["result"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-                ?? event.payload["value"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-                ?? ""
+            let output = event.payload["result"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if output.isEmpty { continue }
             let callID = event.payload["call_id"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if !callID.isEmpty {
@@ -834,6 +1064,19 @@ func encodeJSON<T: Encodable>(_ value: T) throws -> String {
         throw AppError.io("Could not encode JSON text")
     }
     return string
+}
+
+func encodeReplayToolResult(_ value: ToolResultForModel) throws -> String {
+    let replayObject: [String: Any] = [
+        "status_code": value.status_code,
+        "text": value.text,
+        "runtime_duration_ms": value.runtime_duration_ms
+    ]
+    let data = try JSONSerialization.data(withJSONObject: replayObject, options: [.sortedKeys])
+    guard let text = String(data: data, encoding: .utf8) else {
+        throw AppError.io("Could not encode replay tool result JSON text")
+    }
+    return text
 }
 
 func timed<T>(_ operation: () throws -> T) rethrows -> (value: T, durationMs: Int) {
@@ -950,19 +1193,13 @@ func parseBoolString(_ value: String?) -> Bool {
     }
 }
 
-func buildPromptCacheKey(sessionID: String, instructions: String) -> String {
-    let stable = [
-        "decision-v2",
-        sessionID.trimmingCharacters(in: .whitespacesAndNewlines),
-        instructions.trimmingCharacters(in: .whitespacesAndNewlines)
-    ]
-    .filter { !$0.isEmpty }
-    .joined(separator: "\n")
+func buildPromptCacheKey(sessionID: String) -> String {
+    let stable = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
     if stable.isEmpty {
         return ""
     }
     let digest = SHA256.hash(data: Data(stable.utf8))
-    let hex = digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+    let hex = digest.prefix(16).map { String(format: "%02x", $0) }.joined()
     return "wisp-\(hex)"
 }
 
@@ -981,19 +1218,33 @@ func buildAssistantOutputMessageItem(text: String) -> ResponseInputItem {
 }
 
 func buildToolResultForModel(from output: LuaRunOutput, logPath: URL) throws -> ToolResultForModel {
-    let totalBytes = output.text.lengthOfBytes(using: .utf8)
-    let artifactThreshold = max(0, Int(ProcessInfo.processInfo.environment["WISP_TOOL_ARTIFACT_BYTES"] ?? "") ?? 4096)
-    let shouldWriteArtifact = totalBytes > artifactThreshold
+    let rawStdout = output.stdout
+    let rawStderr = output.stderr
+    var fullText = rawStdout
+    if !fullText.isEmpty, !rawStderr.isEmpty, !fullText.hasSuffix("\n") {
+        fullText += "\n"
+    }
+    fullText += rawStderr
+
+    let mode = output.truncation_mode
+    let textTruncation = truncateText(
+        text: fullText,
+        mode: mode,
+        maxLines: readOrBashMaxLines,
+        maxBytes: readOrBashMaxBytes
+    )
+
+    let totalBytes = fullText.lengthOfBytes(using: .utf8)
+    let shouldWriteArtifact = textTruncation.truncated
     var artifactPath: String?
     if shouldWriteArtifact {
-        artifactPath = try writeToolArtifact(text: output.text, logPath: logPath)
+        artifactPath = try writeToolArtifact(text: fullText, logPath: logPath)
     }
 
-    var textForModel = output.text
+    var textForModel = textTruncation.content
     if shouldWriteArtifact, let artifactPath {
-        let preview = utf8Prefix(output.text, maxBytes: max(0, artifactThreshold))
-        let omittedBytes = max(0, totalBytes - preview.lengthOfBytes(using: .utf8))
-        textForModel = preview + "\n[truncated \(omittedBytes) bytes; full output: \(artifactPath)]"
+        let omittedBytes = max(0, totalBytes - textTruncation.content.lengthOfBytes(using: .utf8))
+        textForModel = textForModel + "\n[truncated \(omittedBytes) bytes; full output: \(artifactPath)]"
     }
 
     return ToolResultForModel(
@@ -1144,9 +1395,7 @@ func formatVerboseLines(type: String, payload: [String: String]) -> [String] {
     case "tool_result":
         let status = payload["status_code"] ?? "?"
         let runtime = payload["runtime_duration_ms"] ?? "?"
-        var lines = [
-            "[verbose] tool_result: status_code=\(status), runtime_duration_ms=\(runtime)",
-        ]
+        var lines = ["[verbose] tool_result: status_code=\(status), runtime_duration_ms=\(runtime)"]
         if let truncated = payload["truncated"], truncated == "true" {
             let totalBytes = payload["total_bytes"] ?? "?"
             let artifactPath = payload["artifact_path"] ?? ""
@@ -1155,8 +1404,6 @@ func formatVerboseLines(type: String, payload: [String: String]) -> [String] {
                 lines.append("[verbose] tool_result.artifact_path: \(artifactPath)")
             }
         }
-        lines.append("[verbose] tool_result.value:")
-        lines.append(indentMultiline(payload["value"] ?? ""))
         return lines
     default:
         return []

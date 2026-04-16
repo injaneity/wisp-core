@@ -88,9 +88,9 @@ local function quoted(arg)
     return "'" .. tostring(arg):gsub("'", "'\\''") .. "'"
 end
 
-local function run_shell(command)
+local function run_helper(command)
     local marker = "__WISP_STATUS__"
-    local wrapped = command .. " 2>&1; printf '\\n" .. marker .. ":%s' $?"
+    local wrapped = "{ " .. command .. "; } 2>&1; printf '\\n" .. marker .. ":%s' $?"
     local pipe = io.popen(wrapped)
     if not pipe then
         return 1, "failed to start shell command"
@@ -106,24 +106,11 @@ local function run_shell(command)
     return status, body
 end
 
-local function normalize_search_result(status, text)
-    local trimmed = (text or ""):gsub("^%s+", ""):gsub("%s+$", "")
-    if status == 1 and trimmed == "" then
-        return 0, "No matches found."
-    end
-    return status, text
-end
+local workspace_root = os.getenv("WISP_WORKSPACE_ROOT") or "."
+local helper_bin = os.getenv("WISP_CHAT_HELPER_BIN") or ""
 
-local function detect_workspace_root()
-    local status, text = run_shell("pwd -P")
-    local trimmed = (text or ""):gsub("^%s+", ""):gsub("%s+$", "")
-    if status ~= 0 or trimmed == "" then
-        return "."
-    end
-    return trimmed
-end
-
-local workspace_root = detect_workspace_root()
+local READ_MAX_LINES = 2000
+local BASH_DEFAULT_TIMEOUT_MS = 15000
 
 local function resolve_path(path)
     local raw = tostring(path or "")
@@ -159,155 +146,254 @@ local function ensure_writable_path(path, tool_name)
     error(tool_name .. ": refusing write outside workspace root: " .. workspace_root)
 end
 
-function terminal(command)
-    local started = now_ms()
-    local status, text = run_shell(command)
+local function split_lines(text)
+    local out = {}
+    if text == "" then
+        out[1] = ""
+        return out
+    end
+    local normalized = (text or ""):gsub("\r\n", "\n")
+    if normalized:sub(-1) ~= "\n" then
+        normalized = normalized .. "\n"
+    end
+    for line in normalized:gmatch("(.-)\n") do
+        out[#out + 1] = line
+    end
+    if #out == 0 then
+        out[1] = ""
+    end
+    return out
+end
+
+local function contract(status_code, stdout, stderr, truncation_mode)
     return {
-        status_code = status,
-        text = text,
-        duration_ms = now_ms() - started
+        status_code = tonumber(status_code or 0) or 0,
+        stdout = stdout or "",
+        stderr = stderr or "",
+        truncation_mode = truncation_mode or "head"
     }
 end
 
-function read_file(path, offset, limit)
+local b = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local function base64_decode(data)
+    if not data or data == "" then
+        return ""
+    end
+    data = data:gsub("[^" .. b .. "=]", "")
+    return (data:gsub(".", function(x)
+        if x == "=" then
+            return ""
+        end
+        local r, f = "", (b:find(x, 1, true) or 1) - 1
+        for i = 6, 1, -1 do
+            r = r .. ((f % 2 ^ i - f % 2 ^ (i - 1) > 0) and "1" or "0")
+        end
+        return r
+    end):gsub("%d%d%d?%d?%d?%d?%d?%d?", function(x)
+        if #x ~= 8 then
+            return ""
+        end
+        local c = 0
+        for i = 1, 8 do
+            c = c + ((x:sub(i, i) == "1") and 2 ^ (8 - i) or 0)
+        end
+        return string.char(c)
+    end))
+end
+
+local function parse_helper_json_number(json, key)
+    local pattern = "\"" .. key .. "\":(-?%d+)"
+    return tonumber(json:match(pattern))
+end
+
+local function parse_helper_json_string(json, key)
+    local pattern = "\"" .. key .. "\":\"([^\"]*)\""
+    return json:match(pattern)
+end
+
+function bash(command, timeout)
+    timeout = tonumber(timeout or BASH_DEFAULT_TIMEOUT_MS) or BASH_DEFAULT_TIMEOUT_MS
+    if helper_bin == "" then
+        error("bash: helper binary is not configured")
+    end
+
+    local tmp = os.tmpname()
+    local cmd_file = io.open(tmp, "w")
+    if not cmd_file then
+        error("bash: could not create temp command file")
+    end
+    cmd_file:write(command or "")
+    cmd_file:close()
+
+    local helper_cmd = quoted(helper_bin)
+        .. " --tool-bash --command-file " .. quoted(tmp)
+        .. " --timeout-ms " .. tostring(timeout)
+    local status, raw = run_helper(helper_cmd)
+    os.remove(tmp)
+    if status ~= 0 then
+        error("bash: helper failed: " .. tostring(raw))
+    end
+
+    local tool_status = parse_helper_json_number(raw, "status_code") or 1
+    local stdout_b64 = parse_helper_json_string(raw, "stdout_b64") or ""
+    local stderr_b64 = parse_helper_json_string(raw, "stderr_b64") or ""
+    local stdout = base64_decode(stdout_b64)
+    local stderr = base64_decode(stderr_b64)
+    return contract(tool_status, stdout, stderr, "tail")
+end
+
+function read(path, offset, limit)
     offset = tonumber(offset or 0) or 0
-    limit = tonumber(limit or 200) or 200
-    local file = io.open(path, "r")
+    if offset < 0 then
+        offset = 0
+    end
+    limit = tonumber(limit or READ_MAX_LINES) or READ_MAX_LINES
+    if limit < 0 then
+        limit = 0
+    end
+    local resolved = resolve_path(path)
+    local file = io.open(resolved, "r")
     if not file then
-        error("read_file: cannot open path: " .. tostring(path))
+        error("read: cannot open path: " .. tostring(resolved))
     end
     local full = file:read("*a") or ""
     file:close()
 
-    local all_lines = {}
-    if full == "" then
-        all_lines[1] = ""
-    else
-        full = full:gsub("\r\n", "\n")
-        if full:sub(-1) ~= "\n" then
-            full = full .. "\n"
-        end
-        for line in full:gmatch("(.-)\n") do
-            all_lines[#all_lines + 1] = line
-        end
-        if #all_lines == 0 then
-            all_lines[1] = ""
-        end
-    end
-
-    local lines = {}
+    local all_lines = split_lines(full)
     local total = #all_lines
     local start_idx = math.max(offset + 1, 1)
-    local end_idx = math.min(start_idx + math.max(limit, 0) - 1, total)
+    local end_idx = math.min(start_idx + limit - 1, total)
+    local selected = {}
     for i = start_idx, end_idx do
-        lines[#lines + 1] = all_lines[i]
+        selected[#selected + 1] = all_lines[i]
     end
-
-    return { content = table.concat(lines, "\n"), total_lines = total }
+    local content = table.concat(selected, "\n")
+    return contract(0, content, "", "head")
 end
 
-function write_file(path, content)
-    local resolved_path = ensure_writable_path(path, "write_file")
-    local file = io.open(resolved_path, "w")
+function write(path, content)
+    local resolved = ensure_writable_path(path, "write")
+    local data = content or ""
+    local file = io.open(resolved, "w")
     if not file then
-        error("write_file: cannot open path: " .. tostring(resolved_path))
+        error("write: cannot open path (create parent directories first): " .. tostring(resolved))
     end
-    file:write(content or "")
+    file:write(data)
     file:close()
-    return { ok = true, bytes = #(content or "") }
+    local msg = "Wrote " .. tostring(#data) .. " bytes to " .. resolved
+    return contract(0, msg, "", "head")
 end
 
-function patch(spec)
-    if type(spec) ~= "table" then
-        error("patch: expected table spec")
-    end
-    local path = spec.path
-    local find = spec.find
-    local replace = spec.replace or ""
-    local all = spec.all ~= false
-    if not path or not find then
-        error("patch: path and find are required")
-    end
-    local resolved_path = ensure_writable_path(path, "patch")
+local function build_diff(path, old_content, new_content)
+    local old_lines = split_lines(old_content)
+    local new_lines = split_lines(new_content)
+    local old_count = #old_lines
+    local new_count = #new_lines
 
-    local file = io.open(resolved_path, "r")
-    if not file then
-        error("patch: cannot open path: " .. tostring(resolved_path))
+    local prefix = 0
+    local prefix_max = math.min(old_count, new_count)
+    while prefix < prefix_max and old_lines[prefix + 1] == new_lines[prefix + 1] do
+        prefix = prefix + 1
     end
-    local content = file:read("*a")
+
+    local suffix = 0
+    while suffix < (old_count - prefix) and suffix < (new_count - prefix)
+        and old_lines[old_count - suffix] == new_lines[new_count - suffix] do
+        suffix = suffix + 1
+    end
+
+    local old_start = prefix + 1
+    local new_start = prefix + 1
+    local old_end = old_count - suffix
+    local new_end = new_count - suffix
+    local old_span = math.max(0, old_end - old_start + 1)
+    local new_span = math.max(0, new_end - new_start + 1)
+
+    local out = {
+        "--- " .. path,
+        "+++ " .. path,
+        "@@ -" .. tostring(old_start) .. "," .. tostring(old_span)
+            .. " +" .. tostring(new_start) .. "," .. tostring(new_span) .. " @@"
+    }
+    for i = old_start, old_end do
+        out[#out + 1] = "-" .. old_lines[i]
+    end
+    for i = new_start, new_end do
+        out[#out + 1] = "+" .. new_lines[i]
+    end
+    return table.concat(out, "\n")
+end
+
+function edit(path, old_text, new_text)
+    if type(old_text) ~= "string" or old_text == "" then
+        error("edit: old_text must be a non-empty string")
+    end
+    if type(new_text) ~= "string" then
+        new_text = tostring(new_text or "")
+    end
+
+    local resolved = ensure_writable_path(path, "edit")
+    local file = io.open(resolved, "r")
+    if not file then
+        error("edit: cannot open path: " .. tostring(resolved))
+    end
+    local content = file:read("*a") or ""
     file:close()
 
-    local escaped = find:gsub("([^%w])", "%%%1")
-    local count
-    if all then
-        content, count = content:gsub(escaped, replace)
-    else
-        content, count = content:gsub(escaped, replace, 1)
+    local first_s, first_e = nil, nil
+    local count = 0
+    local start_at = 1
+    while true do
+        local s, e = string.find(content, old_text, start_at, true)
+        if not s then
+            break
+        end
+        count = count + 1
+        if not first_s then
+            first_s = s
+            first_e = e
+        end
+        start_at = e + 1
     end
 
-    local out = io.open(resolved_path, "w")
+    if count == 0 then
+        error("edit: old_text not found in " .. resolved)
+    end
+    if count > 1 then
+        error("edit: ambiguous match in " .. resolved .. " (found " .. tostring(count) .. " occurrences)")
+    end
+
+    local updated = content:sub(1, first_s - 1) .. new_text .. content:sub(first_e + 1)
+    local out = io.open(resolved, "w")
     if not out then
-        error("patch: cannot write path: " .. tostring(resolved_path))
+        error("edit: cannot write path: " .. tostring(resolved))
     end
-    out:write(content)
+    out:write(updated)
     out:close()
 
-    return { ok = true, replacements = count }
+    local diff = build_diff(resolved, content, updated)
+    return contract(0, diff, "", "head")
 end
 
-function search_files(pattern, root)
-    root = root or "."
-    if root == "/" then
-        return { status_code = 1, text = "Refusing search_files on '/'. Use a narrower root path." }
-    end
-    local cmd = "rg --line-number --no-heading --color never " .. quoted(pattern) .. " " .. quoted(root)
-    local status, text = run_shell(cmd)
-    status, text = normalize_search_result(status, text)
-    return { status_code = status, text = text }
-end
-
-function list_files(root)
-    root = root or "."
-    if root == "/" then
-        return { status_code = 1, text = "Refusing list_files on '/'. Use a narrower root path." }
-    end
-    local cmd = "find " .. quoted(root) .. " -mindepth 1 -print 2>/dev/null"
-    local status, text = run_shell(cmd)
-    return { status_code = status, text = text }
-end
-
-function find_files(pattern, root)
-    root = root or "."
-    if root == "/" then
-        return { status_code = 1, text = "Refusing find_files on '/'. Use a narrower root path." }
-    end
-    local cmd = "find " .. quoted(root) .. " -mindepth 1 -print 2>/dev/null | rg --fixed-strings --color never " .. quoted(pattern)
-    local status, text = run_shell(cmd)
-    status, text = normalize_search_result(status, text)
-    return { status_code = status, text = text }
-end
-
-local function emit(status_code, text, runtime_duration_ms)
-    local json = string.format(
-        "{\"status_code\":%d,\"text\":\"%s\",\"runtime_duration_ms\":%d}",
-        status_code,
-        json_escape(text or ""),
-        runtime_duration_ms
-    )
-    print(json)
+local function emit(status_code, runtime_duration_ms, stdout, stderr, truncation_mode)
+    local payload = {
+        status_code = tonumber(status_code or 0) or 0,
+        stdout = stdout or "",
+        stderr = stderr or "",
+        truncation_mode = truncation_mode or "head",
+        runtime_duration_ms = tonumber(runtime_duration_ms or 0) or 0
+    }
+    print(json_encode(payload))
 end
 
 local start_ms = now_ms()
 local code = io.read("*a") or ""
 
 local env = {
-    terminal = terminal,
-    read_file = read_file,
-    write_file = write_file,
-    patch = patch,
-    search_files = search_files,
-    list_files = list_files,
-    find_files = find_files,
+    bash = bash,
+    read = read,
+    write = write,
+    edit = edit,
     ipairs = ipairs,
     math = math,
     next = next,
@@ -321,22 +407,28 @@ local env = {
 
 local chunk, load_err = load(code, "model_code", "t", env)
 if not chunk then
-    emit(1, load_err, now_ms() - start_ms)
+    emit(1, now_ms() - start_ms, "", load_err, "head")
     os.exit(0)
 end
 
 local ok, result = pcall(chunk)
 if not ok then
-    emit(1, result, now_ms() - start_ms)
+    emit(1, now_ms() - start_ms, "", tostring(result), "head")
     os.exit(0)
 end
 
 if result == nil then
-    emit(1, "Lua code returned nil. Use `return <runtime_command>(...)` so tool output is captured.", now_ms() - start_ms)
-elseif type(result) == "table" and result.status_code ~= nil and result.text ~= nil then
-    emit(tonumber(result.status_code) or 0, tostring(result.text), now_ms() - start_ms)
+    emit(1, now_ms() - start_ms, "", "Lua code returned nil. Use `return <tool>(...)` so tool output is captured.", "head")
+elseif type(result) == "table" and result.status_code ~= nil then
+    emit(
+        tonumber(result.status_code) or 0,
+        now_ms() - start_ms,
+        result.stdout,
+        result.stderr,
+        result.truncation_mode
+    )
 elseif type(result) == "table" then
-    emit(0, json_encode(result), now_ms() - start_ms)
+    emit(0, now_ms() - start_ms, json_encode(result), "", "head")
 else
-    emit(0, stringify(result), now_ms() - start_ms)
+    emit(0, now_ms() - start_ms, stringify(result), "", "head")
 end
