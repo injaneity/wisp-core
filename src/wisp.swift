@@ -624,6 +624,7 @@ func resetSessionLog(logPath: URL) throws {
 
 func processUserTurn(_ userMessage: String, config: CLIConfig) throws {
     try logEvent(type: "user_message", payload: ["text": userMessage], config: config)
+    var invalidResponseRetries = 0
 
     while true {
         try logEvent(type: "step", payload: ["name": "construct_context", "state": "started"], config: config)
@@ -645,13 +646,26 @@ func processUserTurn(_ userMessage: String, config: CLIConfig) throws {
         )
 
         try logEvent(type: "step", payload: ["name": "model_call", "state": "started"], config: config)
-        let modelResult = try timed {
-            try callModel(
-                replayInputItems: replayResult.value.inputItems,
-                promptConfig: config.promptConfig,
-                codex: config.codex,
-                sessionID: config.sessionID
-            )
+        let modelResult: (value: ModelCallOutput, durationMs: Int)
+        do {
+            modelResult = try timed {
+                try callModel(
+                    replayInputItems: replayResult.value.inputItems,
+                    promptConfig: config.promptConfig,
+                    codex: config.codex,
+                    sessionID: config.sessionID
+                )
+            }
+        } catch let error as AppError {
+            if case .invalidModelResponse(let message) = error {
+                try logInvalidModelFeedback(message: message, config: config)
+                invalidResponseRetries += 1
+                if invalidResponseRetries >= 3 {
+                    throw AppError.invalidModelResponse("Model produced invalid output \(invalidResponseRetries) times in a row: \(message)")
+                }
+                continue
+            }
+            throw error
         }
         try logEvent(
             type: "step",
@@ -674,11 +688,26 @@ func processUserTurn(_ userMessage: String, config: CLIConfig) throws {
         }
         try logEvent(type: "model_call", payload: modelCallPayload, config: config)
 
-        let turn = try validateTurnOutput(
-            modelResult.value.turn,
-            userMessage: userMessage,
-            replayEventCount: replayResult.value.eventCount
-        )
+        let turn: TurnOutput
+        do {
+            turn = try validateTurnOutput(
+                modelResult.value.turn,
+                userMessage: userMessage,
+                replayEventCount: replayResult.value.eventCount,
+                lastReplayEventType: replayResult.value.lastReplayEventType
+            )
+        } catch let error as AppError {
+            if case .invalidModelResponse(let message) = error {
+                try logInvalidModelFeedback(message: message, config: config)
+                invalidResponseRetries += 1
+                if invalidResponseRetries >= 3 {
+                    throw AppError.invalidModelResponse("Model produced invalid output \(invalidResponseRetries) times in a row: \(message)")
+                }
+                continue
+            }
+            throw error
+        }
+        invalidResponseRetries = 0
 
         let modelPayload: [String: String] = [
             "message": turn.message ?? "",
@@ -1158,15 +1187,26 @@ func appendLog(type: String, payload: [String: String], logPath: URL) throws {
     }
 }
 
-func buildSessionInputItems(logPath: URL) throws -> (inputItems: [ResponseInputItem], eventCount: Int) {
+func logInvalidModelFeedback(message: String, config: CLIConfig) throws {
+    try logEvent(
+        type: "runtime_feedback",
+        payload: [
+            "text": "Your previous response was invalid for the wisp turn contract: \(message). Fix the JSON and continue. If you include `code`, set `continue_turn` to true. Do not end the turn immediately after a tool result."
+        ],
+        config: config
+    )
+}
+
+func buildSessionInputItems(logPath: URL) throws -> (inputItems: [ResponseInputItem], eventCount: Int, lastReplayEventType: String?) {
     guard let data = FileManager.default.contents(atPath: logPath.path),
           let content = String(data: data, encoding: .utf8) else {
-        return ([], 0)
+        return ([], 0, nil)
     }
     let lines = content.split(separator: "\n")
     var inputItems: [ResponseInputItem] = []
-    let replayTypes: Set<String> = ["user_message", "model_response", "tool_call", "tool_result"]
+    let replayTypes: Set<String> = ["user_message", "runtime_feedback", "model_response", "tool_call", "tool_result"]
     var replayEventCount = 0
+    var lastReplayEventType: String?
     for line in lines {
         guard let rowData = line.data(using: .utf8),
               let event = try? JSONDecoder().decode(SessionEvent.self, from: rowData) else {
@@ -1176,8 +1216,14 @@ func buildSessionInputItems(logPath: URL) throws -> (inputItems: [ResponseInputI
             continue
         }
         replayEventCount += 1
+        lastReplayEventType = event.type
         switch event.type {
         case "user_message":
+            let text = event.payload["text"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !text.isEmpty {
+                inputItems.append(buildInputTextMessageItem(role: "user", text: text))
+            }
+        case "runtime_feedback":
             let text = event.payload["text"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if !text.isEmpty {
                 inputItems.append(buildInputTextMessageItem(role: "user", text: text))
@@ -1207,7 +1253,7 @@ func buildSessionInputItems(logPath: URL) throws -> (inputItems: [ResponseInputI
             continue
         }
     }
-    return (inputItems, replayEventCount)
+    return (inputItems, replayEventCount, lastReplayEventType)
 }
 
 func encodeJSON<T: Encodable>(_ value: T) throws -> String {
@@ -1384,7 +1430,12 @@ func buildAssistantOutputMessageItem(text: String) -> ResponseInputItem {
     )
 }
 
-func validateTurnOutput(_ turn: TurnOutput, userMessage: String, replayEventCount: Int) throws -> TurnOutput {
+func validateTurnOutput(
+    _ turn: TurnOutput,
+    userMessage: String,
+    replayEventCount: Int,
+    lastReplayEventType: String?
+) throws -> TurnOutput {
     let message = normalizeOptionalTurnField(turn.message)
     let code = normalizeOptionalTurnField(turn.code)
 
@@ -1396,6 +1447,9 @@ func validateTurnOutput(_ turn: TurnOutput, userMessage: String, replayEventCoun
     }
     if !turn.continue_turn && code == nil && requiresMutationBeforeFinal(userMessage: userMessage, replayEventCount: replayEventCount) {
         throw AppError.invalidModelResponse("This turn requires a tool call before a final response")
+    }
+    if turn.continue_turn && code == nil && lastReplayEventType == "tool_result" {
+        throw AppError.invalidModelResponse("Turn immediately after a tool result must either end the turn or issue another tool call")
     }
 
     return TurnOutput(
@@ -1536,8 +1590,10 @@ func buildSystemPrompt(promptTemplate: String, repoRoot: String, wikiRoot: Strin
 }
 
 func formatStatusBlock(repoRoot: String, wikiRoot: String, now: Date) -> String {
-    _ = now
     var lines = ["Status:"]
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime]
+    lines.append("- current date: \(formatter.string(from: now))")
     let trimmedRepoRoot = repoRoot.trimmingCharacters(in: .whitespacesAndNewlines)
     let trimmedWikiRoot = wikiRoot.trimmingCharacters(in: .whitespacesAndNewlines)
     if !trimmedRepoRoot.isEmpty {
