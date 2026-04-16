@@ -1552,7 +1552,6 @@ func validateTurnOutput(
     if turn.continue_turn && code == nil && lastReplayEventType == "tool_result" {
         throw AppError.invalidModelResponse("Turn immediately after a tool result must either end the turn or issue another tool call")
     }
-
     return TurnOutput(
         message: message,
         scratchpad: scratchpad,

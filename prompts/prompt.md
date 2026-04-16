@@ -54,6 +54,7 @@ Set an unused text field to `null`.
 Use `continue_turn = true` for a non-terminal visible progress beat or a code step after which the turn should continue.
 
 Use `continue_turn = false` only when the task is actually complete for this turn.
+When in doubt, prefer another grounded tool step over ending the turn.
 
 Hard rules:
 
@@ -67,6 +68,8 @@ Hard rules:
 - Do not treat an `rg` miss or empty shell output as proof that a write happened. Search, read, and write are different facts.
 - If you intend to create or modify a file, do the tool call first. Only report completion after the relevant successful `write` or `edit` result is in context.
 - If the task still depends on a missing tool result, more file inspection, or a corrective tool call, keep `continue_turn = true`.
+- If your `message` or `scratchpad` says work is incomplete (for example: "need to continue", "need to verify", "not seeing confirmed results yet"), you must set `continue_turn = true` and provide the next `code` step.
+- For open retrieval or analysis tasks, keep iterating with tool calls until you have enough verified evidence to answer confidently.
 
 At least one of `message`, `scratchpad`, or `code` must be non-null.
 
