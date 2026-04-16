@@ -22,6 +22,7 @@ struct InitConfig {
 
 struct TurnOutput: Codable {
     let message: String?
+    let scratchpad: String?
     let code: String?
     let continue_turn: Bool
 }
@@ -711,6 +712,7 @@ func processUserTurn(_ userMessage: String, config: CLIConfig) throws {
 
         let modelPayload: [String: String] = [
             "message": turn.message ?? "",
+            "scratchpad": turn.scratchpad ?? "",
             "code": turn.code ?? "",
             "continue_turn": String(turn.continue_turn)
         ]
@@ -1297,10 +1299,11 @@ func makeResponseSchema() -> ResponseSchema {
         type: "object",
         properties: [
             "message": ResponseSchemaProperty(type: .multi(["string", "null"])),
+            "scratchpad": ResponseSchemaProperty(type: .multi(["string", "null"])),
             "code": ResponseSchemaProperty(type: .multi(["string", "null"])),
             "continue_turn": ResponseSchemaProperty(type: .single("boolean"))
         ],
-        required: ["message", "code", "continue_turn"],
+        required: ["message", "scratchpad", "code", "continue_turn"],
         additionalProperties: false
     )
 }
@@ -1383,14 +1386,16 @@ func serializeJSONObject(_ object: Any) -> String {
 
 func buildTurnReplayText(payload: [String: String]) throws -> String {
     let message = payload["message"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let scratchpad = payload["scratchpad"]?.trimmingCharacters(in: .whitespacesAndNewlines)
     let code = payload["code"]?.trimmingCharacters(in: .whitespacesAndNewlines)
     let continueTurn = parseBoolString(payload["continue_turn"])
-    if (message ?? "").isEmpty && (code ?? "").isEmpty && !continueTurn {
+    if (message ?? "").isEmpty && (scratchpad ?? "").isEmpty && (code ?? "").isEmpty && !continueTurn {
         return ""
     }
     return try encodeJSON(
         TurnOutput(
             message: (message ?? "").isEmpty ? nil : message,
+            scratchpad: (scratchpad ?? "").isEmpty ? nil : scratchpad,
             code: (code ?? "").isEmpty ? nil : code,
             continue_turn: continueTurn
         )
@@ -1437,10 +1442,11 @@ func validateTurnOutput(
     lastReplayEventType: String?
 ) throws -> TurnOutput {
     let message = normalizeOptionalTurnField(turn.message)
+    let scratchpad = normalizeOptionalTurnField(turn.scratchpad)
     let code = normalizeOptionalTurnField(turn.code)
 
-    if message == nil && code == nil {
-        throw AppError.invalidModelResponse("Turn requires message or code")
+    if message == nil && scratchpad == nil && code == nil {
+        throw AppError.invalidModelResponse("Turn requires message, scratchpad, or code")
     }
     if code != nil && !turn.continue_turn {
         throw AppError.invalidModelResponse("Turn with code must set continue_turn to true")
@@ -1454,6 +1460,7 @@ func validateTurnOutput(
 
     return TurnOutput(
         message: message,
+        scratchpad: scratchpad,
         code: code,
         continue_turn: turn.continue_turn
     )
@@ -1861,10 +1868,13 @@ func formatVerboseLines(type: String, payload: [String: String]) -> [String] {
     case "model_response":
         let continueTurn = payload["continue_turn"] ?? "false"
         let message = payload["message"] ?? ""
+        let scratchpad = payload["scratchpad"] ?? ""
         return [
             "[verbose] model_response.continue_turn: \(continueTurn)",
             "[verbose] model_response.message:",
-            indentMultiline(message)
+            indentMultiline(message),
+            "[verbose] model_response.scratchpad:",
+            indentMultiline(scratchpad)
         ]
     case "tool_call":
         return [
