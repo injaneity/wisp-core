@@ -13,6 +13,12 @@ struct CLIConfig {
     let workspaceConfigPath: URL?
 }
 
+struct RuntimeDependency {
+    let id: String
+    let command: String
+    let required: Bool
+}
+
 struct InitConfig {
     let targetRoot: URL
     let repoRoot: URL
@@ -235,6 +241,10 @@ struct WispMain {
             if try runInternalToolModeIfRequested() {
                 return
             }
+            if try runDependencyInstallModeIfRequested() {
+                return
+            }
+            try ensureRuntimeDependencies()
             let config = try parseArgs()
             try prepareDirectories(for: config.logPath)
             try resetSessionLog(logPath: config.logPath)
@@ -271,6 +281,101 @@ struct WispMain {
             exit(1)
         }
     }
+}
+
+func runtimeDependencies() -> [RuntimeDependency] {
+    [
+        RuntimeDependency(id: "lua", command: "lua", required: true),
+        RuntimeDependency(id: "ripgrep", command: "rg", required: false)
+    ]
+}
+
+func missingRuntimeDependencies() -> (required: [RuntimeDependency], optional: [RuntimeDependency]) {
+    var required: [RuntimeDependency] = []
+    var optional: [RuntimeDependency] = []
+
+    let hasBundledRG = resolveBundledRGDirectory() != nil
+    for dependency in runtimeDependencies() {
+        if dependency.command == "rg", hasBundledRG {
+            continue
+        }
+        if isCommandAvailable(dependency.command) {
+            continue
+        }
+        if dependency.required {
+            required.append(dependency)
+        } else {
+            optional.append(dependency)
+        }
+    }
+    return (required, optional)
+}
+
+func isCommandAvailable(_ name: String) -> Bool {
+    let env = ProcessInfo.processInfo.environment
+    let pathValue = env["PATH"] ?? ""
+    let separator = Character(":")
+    for rawPart in pathValue.split(separator: separator, omittingEmptySubsequences: true) {
+        let directory = String(rawPart)
+        let candidate = directory + "/" + name
+        if FileManager.default.isExecutableFile(atPath: candidate) {
+            return true
+        }
+    }
+    return false
+}
+
+func runDependencyInstallModeIfRequested() throws -> Bool {
+    let args = Array(CommandLine.arguments.dropFirst())
+    guard args.contains("--install-deps") else {
+        return false
+    }
+    try installRuntimeDependencies()
+    return true
+}
+
+func installRuntimeDependencies() throws {
+    guard isCommandAvailable("brew") else {
+        throw AppError.io("Could not auto-install dependencies because Homebrew is unavailable. Install manually: lua and ripgrep.")
+    }
+    print("installing runtime dependencies (lua, ripgrep) via Homebrew...")
+    let result = try runBashCommand(command: "brew install lua ripgrep", timeoutMs: 10 * 60 * 1000)
+    if result.statusCode != 0 {
+        let details = [result.stdout, result.stderr]
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        throw AppError.io("Dependency install failed (exit \(result.statusCode)).\(details.isEmpty ? "" : " " + details)")
+    }
+    print("dependencies installed.")
+}
+
+func ensureRuntimeDependencies() throws {
+    let missing = missingRuntimeDependencies()
+
+    if !missing.optional.isEmpty {
+        let names = missing.optional.map(\.id).joined(separator: ", ")
+        fputs("warning: optional dependencies missing: \(names)\n", stderr)
+    }
+
+    guard !missing.required.isEmpty else {
+        return
+    }
+
+    let requiredNames = missing.required.map(\.id).joined(separator: ", ")
+    if isatty(STDIN_FILENO) == 1 && isCommandAvailable("brew") {
+        print("missing required dependencies: \(requiredNames)")
+        print("install now using Homebrew? [Y/n]: ", terminator: "")
+        let input = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if input.isEmpty || input == "y" || input == "yes" {
+            try installRuntimeDependencies()
+            let postInstall = missingRuntimeDependencies()
+            if postInstall.required.isEmpty {
+                return
+            }
+        }
+    }
+
+    throw AppError.io("Missing required dependencies: \(requiredNames). Install with `wisp --install-deps` or manually install: lua.")
 }
 
 func runInternalToolModeIfRequested() throws -> Bool {
