@@ -2,17 +2,17 @@
 import PackageDescription
 
 let package = Package(
-    name: "wisp-core",
+    name: "wisp",
     platforms: [
         .macOS(.v13)
     ],
     products: [
-        .executable(name: "wisp-chat", targets: ["WispChat"])
+        .executable(name: "wisp", targets: ["Wisp"])
     ],
     targets: [
         .executableTarget(
-            name: "WispChat",
-            path: "Sources/WispChat"
+            name: "Wisp",
+            path: "src"
         )
     ]
 )

@@ -186,7 +186,7 @@ let readOrBashMaxLines = 2_000
 let readOrBashMaxBytes = 50 * 1024
 
 @main
-struct WispChatMain {
+struct WispMain {
     static func main() {
         do {
             if try runInternalToolModeIfRequested() {
@@ -199,7 +199,7 @@ struct WispChatMain {
                 print("[verbose] prompts.system: \(config.promptConfig.systemPromptSource)")
             }
             print("session initialized (previous session archived if present).")
-            print("wisp-chat started. Type `exit` to quit and clear session, or `restart` to clear session and continue.")
+            print("wisp started. Type `exit` to quit and clear session, or `restart` to clear session and continue.")
 
             while true {
                 print("you> ", terminator: "")
@@ -443,7 +443,7 @@ func parseArgs() throws -> CLIConfig {
     let args = CommandLine.arguments.dropFirst()
     var verbose = false
     let logPath = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        .appendingPathComponent(".wisp-chat/session.jsonl")
+        .appendingPathComponent(".wisp/session.jsonl")
     let promptsDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         .appendingPathComponent("prompts")
     var index = args.startIndex
@@ -698,7 +698,7 @@ func executeLua(code: String) throws -> LuaRunOutput {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     let runtimePath = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        .appendingPathComponent("Scripts/lua_runtime.lua").path
+        .appendingPathComponent("scripts/lua_runtime.lua").path
     process.arguments = ["lua", runtimePath]
     var runtimeEnv = ProcessInfo.processInfo.environment
     runtimeEnv["WISP_CHAT_HELPER_BIN"] = CommandLine.arguments[0]

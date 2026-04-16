@@ -24,7 +24,7 @@ enum CodexOAuth {
         let accountID = try extractAccountID(from: token)
         let userAgent: String = {
             let p = ProcessInfo.processInfo
-            return "wisp-chat (\(p.operatingSystemVersionString))"
+            return "wisp (\(p.operatingSystemVersionString))"
         }()
         return [
             "Content-Type": "application/json",
@@ -32,7 +32,7 @@ enum CodexOAuth {
             "Authorization": "Bearer \(token)",
             "OpenAI-Beta": "responses=experimental",
             "chatgpt-account-id": accountID,
-            "originator": "wisp-chat",
+            "originator": "wisp",
             "User-Agent": userAgent,
             "session_id": sessionID,
             "x-client-request-id": sessionID
