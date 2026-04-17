@@ -13,13 +13,13 @@ final class ConversationState {
     func appendUserMessage(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        record(buildInputTextMessageItem(role: "user", text: trimmed))
+        record(.message(role: "user", content: [ResponseMessageContent(type: "input_text", text: trimmed)]))
     }
 
     func appendAssistantMessage(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        record(buildAssistantOutputMessageItem(text: trimmed))
+        record(.message(role: "assistant", content: [ResponseMessageContent(type: "output_text", text: trimmed)]))
     }
 
     func appendFunctionCall(callID: String, name: String, arguments: String) {
@@ -319,6 +319,27 @@ func makeToolDefinitions() -> [[String: Any]] {
     ]
 }
 
+private func decodeStreamEvent(_ payload: String) -> [String: Any]? {
+    guard let eventData = payload.data(using: .utf8),
+          let eventJSON = try? JSONSerialization.jsonObject(with: eventData, options: []),
+          let event = eventJSON as? [String: Any],
+          event["type"] as? String != nil else {
+        return nil
+    }
+    return event
+}
+
+private func extractStreamFailureMessage(from event: [String: Any], eventType: String) -> String {
+    if let errorObj = event["error"] as? [String: Any],
+       let message = nonEmptyText(errorObj["message"]) {
+        return message
+    }
+    if let message = nonEmptyText(event["message"]) {
+        return message
+    }
+    return "Responses stream failed with event type \(eventType)"
+}
+
 private final class ToolCallingStreamParser {
     private var currentDataLines: [String] = []
     private var streamFailureMessage: String?
@@ -375,9 +396,7 @@ private final class ToolCallingStreamParser {
         let payload = currentDataLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         currentDataLines.removeAll(keepingCapacity: true)
         guard !payload.isEmpty, payload != "[DONE]" else { return nil }
-        guard let eventData = payload.data(using: .utf8),
-              let eventJSON = try? JSONSerialization.jsonObject(with: eventData, options: []),
-              let event = eventJSON as? [String: Any],
+        guard let event = decodeStreamEvent(payload),
               let eventType = event["type"] as? String else {
             lastUnparsedEventPreview = compactText(payload, limit: 1_200)
             return nil
@@ -402,23 +421,14 @@ private final class ToolCallingStreamParser {
             if let response = event["response"] as? [String: Any],
                let output = response["output"] as? [[String: Any]],
                !output.isEmpty {
-                let extracted = try extractToolCallingResponse(from: response)
+                let extracted = extractToolCallingResponse(from: response)
                 merge(assistantMessages: extracted.assistantMessages, toolCalls: extracted.toolCalls)
             }
             if !assistantMessages.isEmpty || !toolCalls.isEmpty {
                 return (assistantMessages, toolCalls)
             }
         case "response.failed", "error":
-            if let errorObj = event["error"] as? [String: Any],
-               let message = errorObj["message"] as? String,
-               !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                streamFailureMessage = message
-            } else if let message = event["message"] as? String,
-                      !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                streamFailureMessage = message
-            } else {
-                streamFailureMessage = "Responses stream failed with event type \(eventType)"
-            }
+            streamFailureMessage = extractStreamFailureMessage(from: event, eventType: eventType)
         default:
             break
         }
@@ -426,32 +436,13 @@ private final class ToolCallingStreamParser {
     }
 
     private func consumeOutputItem(_ item: [String: Any]) {
-        guard let type = item["type"] as? String else { return }
-        switch type {
-        case "message":
-            if let content = item["content"] as? [[String: Any]] {
-                var parts: [String] = []
-                for part in content {
-                    let partType = part["type"] as? String
-                    if partType == "output_text", let text = nonEmptyText(part["text"]) {
-                        parts.append(text)
-                    } else if partType == "refusal", let refusal = nonEmptyText(part["refusal"]) {
-                        parts.append(refusal)
-                    }
-                }
-                let text = parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-                appendAssistantMessage(text)
-            }
-        case "function_call":
-            let callID = (item["call_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let name = (item["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let arguments = (item["arguments"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "{}"
-            guard !callID.isEmpty, !name.isEmpty else { return }
-            if !toolCalls.contains(where: { $0.callID == callID }) {
-                toolCalls.append(ToolCall(callID: callID, name: name, arguments: arguments))
-            }
-        default:
+        if let text = extractAssistantMessage(from: item) {
+            appendAssistantMessage(text)
             return
+        }
+        guard let toolCall = extractToolCall(from: item) else { return }
+        if !toolCalls.contains(where: { $0.callID == toolCall.callID }) {
+            toolCalls.append(toolCall)
         }
     }
 
@@ -525,37 +516,50 @@ func streamToolCallingResponse(_ request: URLRequest) throws -> (assistantMessag
     return result
 }
 
-func extractToolCallingResponse(from responseObject: [String: Any]) throws -> (assistantMessages: [String], toolCalls: [ToolCall]) {
+private func extractAssistantMessage(from item: [String: Any]) -> String? {
+    guard (item["type"] as? String) == "message",
+          let content = item["content"] as? [[String: Any]] else {
+        return nil
+    }
+    let parts = content.compactMap { part -> String? in
+        switch part["type"] as? String {
+        case "output_text":
+            return nonEmptyText(part["text"])
+        case "refusal":
+            return nonEmptyText(part["refusal"])
+        default:
+            return nil
+        }
+    }
+    let text = parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    return text.isEmpty ? nil : text
+}
+
+private func extractToolCall(from item: [String: Any]) -> ToolCall? {
+    guard (item["type"] as? String) == "function_call" else {
+        return nil
+    }
+    let callID = (item["call_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let name = (item["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let arguments = (item["arguments"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "{}"
+    guard !callID.isEmpty, !name.isEmpty else {
+        return nil
+    }
+    return ToolCall(callID: callID, name: name, arguments: arguments)
+}
+
+func extractToolCallingResponse(from responseObject: [String: Any]) -> (assistantMessages: [String], toolCalls: [ToolCall]) {
     let output = responseObject["output"] as? [[String: Any]] ?? []
     var assistantMessages: [String] = []
     var toolCalls: [ToolCall] = []
 
     for item in output {
-        guard let type = item["type"] as? String else { continue }
-        switch type {
-        case "message":
-            guard let content = item["content"] as? [[String: Any]] else { continue }
-            var parts: [String] = []
-            for part in content {
-                let partType = part["type"] as? String
-                if partType == "output_text", let text = nonEmptyText(part["text"]) {
-                    parts.append(text)
-                } else if partType == "refusal", let refusal = nonEmptyText(part["refusal"]) {
-                    parts.append(refusal)
-                }
-            }
-            let text = parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty {
-                assistantMessages.append(text)
-            }
-        case "function_call":
-            let callID = (item["call_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let name = (item["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let arguments = (item["arguments"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "{}"
-            guard !callID.isEmpty, !name.isEmpty else { continue }
-            toolCalls.append(ToolCall(callID: callID, name: name, arguments: arguments))
-        default:
+        if let text = extractAssistantMessage(from: item) {
+            assistantMessages.append(text)
             continue
+        }
+        if let toolCall = extractToolCall(from: item) {
+            toolCalls.append(toolCall)
         }
     }
 
@@ -645,17 +649,9 @@ func executeBashTool(command: String, timeoutSeconds: Int?, config: CLIConfig) t
     )
 }
 
-private func executeNoteTool(args: NoteToolArguments, config: CLIConfig) throws -> ToolExecutionOutput {
-    let startedAt = Date()
+private func executeCreationTool(startedAt: Date, create: () throws -> String) -> ToolExecutionOutput {
     do {
-        let path = try createNoteFile(
-            title: args.title,
-            summary: args.summary,
-            content: args.content ?? "",
-            artifacts: args.artifacts ?? [],
-            explicitPath: args.path,
-            config: config
-        )
+        let path = try create()
         return ToolExecutionOutput(
             status_code: 0,
             stdout: "created \(path)",
@@ -674,10 +670,24 @@ private func executeNoteTool(args: NoteToolArguments, config: CLIConfig) throws 
     }
 }
 
+private func executeNoteTool(args: NoteToolArguments, config: CLIConfig) throws -> ToolExecutionOutput {
+    let startedAt = Date()
+    return executeCreationTool(startedAt: startedAt) {
+        try createNoteFile(
+            title: args.title,
+            summary: args.summary,
+            content: args.content ?? "",
+            artifacts: args.artifacts ?? [],
+            explicitPath: args.path,
+            config: config
+        )
+    }
+}
+
 private func executeTaskTool(args: TaskToolArguments, config: CLIConfig) throws -> ToolExecutionOutput {
     let startedAt = Date()
-    do {
-        let path = try createTaskFile(
+    return executeCreationTool(startedAt: startedAt) {
+        try createTaskFile(
             title: args.title,
             summary: args.summary,
             content: args.content ?? "",
@@ -688,21 +698,6 @@ private func executeTaskTool(args: TaskToolArguments, config: CLIConfig) throws 
             status: args.status,
             explicitPath: args.path,
             config: config
-        )
-        return ToolExecutionOutput(
-            status_code: 0,
-            stdout: "created \(path)",
-            stderr: "",
-            truncation_mode: "head",
-            runtime_duration_ms: wallDurationMs(since: startedAt)
-        )
-    } catch {
-        return ToolExecutionOutput(
-            status_code: 1,
-            stdout: "",
-            stderr: String(describing: error),
-            truncation_mode: "head",
-            runtime_duration_ms: wallDurationMs(since: startedAt)
         )
     }
 }

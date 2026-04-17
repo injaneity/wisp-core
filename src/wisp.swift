@@ -16,12 +16,6 @@ struct CLIConfig {
     let conversationState: ConversationState
 }
 
-struct RuntimeDependency {
-    let id: String
-    let command: String
-    let required: Bool
-}
-
 struct InitConfig {
     let targetRoot: URL
     let repoRoot: URL
@@ -127,11 +121,6 @@ struct PromptConfig {
     let systemPromptSource: String
 }
 
-struct WorkspaceConfigPaths {
-    let configPath: URL
-    let configExamplePath: URL
-}
-
 struct ResponseMessageContent: Encodable {
     let type: String
     let text: String
@@ -201,10 +190,7 @@ let readOrBashMaxBytes = 50 * 1024
 struct WispMain {
     static func main() {
         do {
-            if try runDependencyInstallModeIfRequested() {
-                return
-            }
-            try ensureRuntimeDependencies()
+            ensureRuntimeDependencies()
             let config = try parseArgs()
             try prepareDirectories(for: config.logPath)
             try resetSessionLog(logPath: config.logPath)
@@ -240,40 +226,13 @@ struct WispMain {
                 if line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     continue
                 }
-                try processUserTurn(line, config: config)
+                try runAgentLoop(line, config: config)
             }
         } catch {
             fputs("error: \(error)\n", stderr)
             exit(1)
         }
     }
-}
-
-func runtimeDependencies() -> [RuntimeDependency] {
-    [
-        RuntimeDependency(id: "ripgrep", command: "rg", required: false)
-    ]
-}
-
-func missingRuntimeDependencies() -> (required: [RuntimeDependency], optional: [RuntimeDependency]) {
-    var required: [RuntimeDependency] = []
-    var optional: [RuntimeDependency] = []
-
-    let hasBundledRG = resolveBundledRGDirectory() != nil
-    for dependency in runtimeDependencies() {
-        if dependency.command == "rg", hasBundledRG {
-            continue
-        }
-        if isCommandAvailable(dependency.command) {
-            continue
-        }
-        if dependency.required {
-            required.append(dependency)
-        } else {
-            optional.append(dependency)
-        }
-    }
-    return (required, optional)
 }
 
 func isCommandAvailable(_ name: String) -> Bool {
@@ -290,57 +249,11 @@ func isCommandAvailable(_ name: String) -> Bool {
     return false
 }
 
-func runDependencyInstallModeIfRequested() throws -> Bool {
-    let args = Array(CommandLine.arguments.dropFirst())
-    guard args.contains("--install-deps") else {
-        return false
-    }
-    try installRuntimeDependencies()
-    return true
-}
-
-func installRuntimeDependencies() throws {
-    guard isCommandAvailable("brew") else {
-        throw AppError.io("Could not auto-install dependencies because Homebrew is unavailable. Install manually: ripgrep.")
-    }
-    print("installing optional runtime dependencies (ripgrep) via Homebrew...")
-    let result = try runBashCommand(command: "brew install ripgrep", timeoutMs: 10 * 60 * 1000)
-    if result.statusCode != 0 {
-        let details = [result.stdout, result.stderr]
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        throw AppError.io("Dependency install failed (exit \(result.statusCode)).\(details.isEmpty ? "" : " " + details)")
-    }
-    print("dependencies installed.")
-}
-
-func ensureRuntimeDependencies() throws {
-    let missing = missingRuntimeDependencies()
-
-    if !missing.optional.isEmpty {
-        let names = missing.optional.map(\.id).joined(separator: ", ")
-        fputs("warning: optional dependencies missing: \(names)\n", stderr)
-    }
-
-    guard !missing.required.isEmpty else {
+func ensureRuntimeDependencies() {
+    guard resolveBundledRGDirectory() != nil || isCommandAvailable("rg") else {
+        fputs("warning: optional dependency missing: ripgrep\n", stderr)
         return
     }
-
-    let requiredNames = missing.required.map(\.id).joined(separator: ", ")
-    if isatty(STDIN_FILENO) == 1 && isCommandAvailable("brew") {
-        print("missing required dependencies: \(requiredNames)")
-        print("install now using Homebrew? [Y/n]: ", terminator: "")
-        let input = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        if input.isEmpty || input == "y" || input == "yes" {
-            try installRuntimeDependencies()
-            let postInstall = missingRuntimeDependencies()
-            if postInstall.required.isEmpty {
-                return
-            }
-        }
-    }
-
-    throw AppError.io("Missing required dependencies: \(requiredNames). Install with `wisp --install-deps` or manually install them.")
 }
 
 func runBashCommand(command: String, timeoutMs: Int, currentDirectory: URL? = nil) throws -> (statusCode: Int, stdout: String, stderr: String) {
@@ -498,56 +411,60 @@ func resolveBundledRGDirectory() -> String? {
 }
 
 func parseArgs() throws -> CLIConfig {
-    let args = CommandLine.arguments.dropFirst()
-    var verbose = false
-    var index = args.startIndex
+    let workingDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).standardizedFileURL
+    let verbose = try parseCLIFlags(Array(CommandLine.arguments.dropFirst()))
+    let workspaceConfig = try resolveOrInitializeWorkspaceConfig(startingAt: workingDirectory)
+    return try makeCLIConfig(verbose: verbose, workspaceConfig: workspaceConfig, workingDirectory: workingDirectory)
+}
 
-    while index < args.endIndex {
-        let arg = args[index]
+func parseCLIFlags(_ args: [String]) throws -> Bool {
+    var verbose = false
+    for arg in args {
         switch arg {
         case "--verbose":
             verbose = true
-            index = args.index(after: index)
         default:
             throw AppError.io("Unknown argument: \(arg)")
         }
     }
+    return verbose
+}
 
-    var workspaceConfig = try resolveWorkspaceConfig(startingAt: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
-    if workspaceConfig.wikiRoot == nil {
-        let targetRoot = try promptForWikiRoot()
-        let configPaths = resolveWorkspaceConfigPaths(repoRoot: workspaceConfig.repoRoot)
-        try runInit(
-            config: InitConfig(
-                targetRoot: targetRoot,
-                repoRoot: workspaceConfig.repoRoot,
-                configPath: configPaths.configPath,
-                configExamplePath: configPaths.configExamplePath
-            )
-        )
-        workspaceConfig = try resolveWorkspaceConfig(startingAt: workspaceConfig.repoRoot)
+func resolveOrInitializeWorkspaceConfig(startingAt workingDirectory: URL) throws -> ResolvedWorkspaceConfig {
+    var workspaceConfig = try resolveWorkspaceConfig(startingAt: workingDirectory)
+    if workspaceConfig.wikiRoot != nil {
+        return workspaceConfig
     }
+
+    let targetRoot = try promptForWikiRoot()
+    let dotWisp = workspaceConfig.repoRoot.appendingPathComponent(".wisp")
+    try runInit(
+        config: InitConfig(
+            targetRoot: targetRoot,
+            repoRoot: workspaceConfig.repoRoot,
+            configPath: dotWisp.appendingPathComponent("config.yaml"),
+            configExamplePath: dotWisp.appendingPathComponent("config.yaml.example")
+        )
+    )
+    workspaceConfig = try resolveWorkspaceConfig(startingAt: workspaceConfig.repoRoot)
+    return workspaceConfig
+}
+
+func makeCLIConfig(verbose: Bool, workspaceConfig: ResolvedWorkspaceConfig, workingDirectory: URL) throws -> CLIConfig {
     guard let wikiRoot = workspaceConfig.wikiRoot else {
         throw AppError.io("Wiki root is still unset after initialization.")
     }
-    let promptsDir = workspaceConfig.repoRoot.appendingPathComponent("prompts")
-    let codex = resolveCodexSettings(workspaceConfig: workspaceConfig)
-    let promptConfig = try loadPromptConfig(
-        promptsDir: promptsDir,
-        repoRoot: workspaceConfig.repoRoot,
-        wikiRoot: wikiRoot
-    )
     let logPath = wikiRoot.appendingPathComponent(".wisp/session.jsonl")
     return CLIConfig(
         verbose: verbose,
         logPath: logPath,
         logWriter: EventLogWriter(path: logPath),
-        codex: codex,
-        promptConfig: promptConfig,
+        codex: resolveCodexSettings(workspaceConfig: workspaceConfig),
+        promptConfig: try loadPromptConfig(repoRoot: workspaceConfig.repoRoot, wikiRoot: wikiRoot),
         sessionID: UUID().uuidString.lowercased(),
         repoRoot: workspaceConfig.repoRoot,
         wikiRoot: wikiRoot,
-        workingDirectory: URL(fileURLWithPath: FileManager.default.currentDirectoryPath).standardizedFileURL,
+        workingDirectory: workingDirectory,
         workspaceConfigPath: workspaceConfig.configPath,
         conversationState: ConversationState()
     )
@@ -575,10 +492,6 @@ func resetSessionLog(logPath: URL) throws {
     try Data().write(to: logPath, options: .atomic)
 }
 
-func processUserTurn(_ userMessage: String, config: CLIConfig) throws {
-    try runAgentLoop(userMessage, config: config)
-}
-
 func loadCodexOAuthToken(authFile: URL) throws -> String {
     let data = try Data(contentsOf: authFile)
     let json = try JSONSerialization.jsonObject(with: data, options: [])
@@ -595,47 +508,6 @@ func loadCodexOAuthToken(authFile: URL) throws -> String {
     return token
 }
 
-func httpRequest(_ request: URLRequest) throws -> Data {
-    let semaphore = DispatchSemaphore(value: 0)
-    final class RequestState: @unchecked Sendable {
-        let lock = NSLock()
-        var resultData: Data?
-        var resultError: Error?
-        var statusCode: Int?
-    }
-    let state = RequestState()
-
-    URLSession.shared.dataTask(with: request) { data, response, error in
-        defer { semaphore.signal() }
-        state.lock.lock()
-        defer { state.lock.unlock() }
-        if let error {
-            state.resultError = error
-            return
-        }
-        if let http = response as? HTTPURLResponse {
-            state.statusCode = http.statusCode
-        }
-        state.resultData = data
-    }.resume()
-
-    semaphore.wait()
-    if let resultError = state.resultError {
-        throw AppError.requestFailed(resultError.localizedDescription)
-    }
-    guard let data = state.resultData else {
-        throw AppError.requestFailed("No data from API")
-    }
-    guard let statusCode = state.statusCode else {
-        throw AppError.requestFailed("No HTTP status code from API")
-    }
-    guard (200..<300).contains(statusCode) else {
-        let body = String(data: data, encoding: .utf8) ?? "<non-utf8 body>"
-        throw AppError.requestFailed("HTTP \(statusCode): \(body)")
-    }
-    return data
-}
-
 func nonEmptyText(_ value: Any?) -> String? {
     switch value {
     case let text as String:
@@ -648,163 +520,8 @@ func nonEmptyText(_ value: Any?) -> String? {
     }
 }
 
-func extractOutputText(from responseObject: [String: Any]) -> String {
-    if let text = nonEmptyText(responseObject["output_text"]) {
-        return text
-    }
-    guard let output = responseObject["output"] as? [[String: Any]] else {
-        return ""
-    }
-    for item in output {
-        guard let content = item["content"] as? [[String: Any]] else {
-            continue
-        }
-        for part in content {
-            let partType = (part["type"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard partType == "output_text" else {
-                continue
-            }
-            if let text = nonEmptyText(part["text"]) {
-                return text
-            }
-        }
-    }
-    return ""
-}
-
-func extractModelText(from responseObject: [String: Any]) -> String? {
-    let text = extractOutputText(from: responseObject)
-    return text.isEmpty ? nil : text
-}
-
-func decodeTextResponse(from responseData: Data) throws -> String {
-    if let json = try? JSONSerialization.jsonObject(with: responseData, options: []),
-       let obj = json as? [String: Any] {
-        if let text = extractModelText(from: obj) {
-            return text
-        }
-    }
-
-    guard let streamText = String(data: responseData, encoding: .utf8) else {
-        throw AppError.invalidModelResponse("Response was neither JSON nor utf8 SSE")
-    }
-    var collectedOutput = ""
-    var currentDataLines: [String] = []
-    var streamFailureMessage: String?
-    var lastCompletedResponsePreview: String?
-    var lastUnparsedEventPreview: String?
-
-    func flushEvent() throws -> (done: Bool, output: String?) {
-        guard !currentDataLines.isEmpty else { return (false, nil) }
-        let payload = currentDataLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        currentDataLines.removeAll(keepingCapacity: true)
-        if payload.isEmpty { return (false, nil) }
-        if payload == "[DONE]" { return (true, nil) }
-
-        guard let eventData = payload.data(using: .utf8),
-              let eventJSON = try? JSONSerialization.jsonObject(with: eventData, options: []),
-              let event = eventJSON as? [String: Any],
-              let eventType = event["type"] as? String else {
-            lastUnparsedEventPreview = compactText(payload, limit: 1200)
-            return (false, nil)
-        }
-
-        if eventType == "response.output_text.delta", let delta = event["delta"] as? String {
-            collectedOutput += delta
-            return (false, nil)
-        }
-        if eventType == "response.failed" || eventType == "error" {
-            if let errorObj = event["error"] as? [String: Any],
-               let message = errorObj["message"] as? String,
-               !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                streamFailureMessage = message
-            } else if let message = event["message"] as? String,
-                      !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                streamFailureMessage = message
-            } else {
-                streamFailureMessage = "Responses stream failed with event type \(eventType)"
-            }
-            return (true, nil)
-        }
-        if eventType == "response.output_text.done",
-           let text = event["text"] as? String,
-           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            collectedOutput = text
-            return (false, nil)
-        }
-        if eventType == "response.completed" {
-            if let responseObj = event["response"] as? [String: Any] {
-                let final = extractModelText(from: responseObj)
-                lastCompletedResponsePreview = compactText(serializeJSONObject(responseObj), limit: 1200)
-                if let final {
-                    return (true, final)
-                }
-            }
-            return (true, nil)
-        }
-        return (false, nil)
-    }
-
-    for raw in streamText.components(separatedBy: .newlines) {
-        let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if line.isEmpty {
-            let result = try flushEvent()
-            if result.done {
-                let final = (result.output ?? collectedOutput).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !final.isEmpty {
-                    return final
-                }
-                break
-            }
-            continue
-        }
-        if line.hasPrefix("data:") {
-            currentDataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
-        }
-    }
-    let tail = try flushEvent()
-    if tail.done {
-        let final = (tail.output ?? collectedOutput).trimmingCharacters(in: .whitespacesAndNewlines)
-        if !final.isEmpty {
-            return final
-        }
-    }
-
-    if let final = nonEmptyText(collectedOutput) {
-        return final
-    }
-    if let streamFailureMessage, !streamFailureMessage.isEmpty {
-        throw AppError.invalidModelResponse("Responses stream failed: \(streamFailureMessage)")
-    }
-    var details: [String] = []
-    if let lastCompletedResponsePreview, !lastCompletedResponsePreview.isEmpty {
-        details.append("response.completed preview: \(lastCompletedResponsePreview)")
-    }
-    if let lastUnparsedEventPreview, !lastUnparsedEventPreview.isEmpty {
-        details.append("unparsed event preview: \(lastUnparsedEventPreview)")
-    }
-    let streamPreview = compactText(streamText, limit: 1200)
-    if !streamPreview.isEmpty {
-        details.append("stream preview: \(streamPreview)")
-    }
-    if details.isEmpty {
-        throw AppError.invalidModelResponse("Could not extract output text from streamed response")
-    }
-    throw AppError.invalidModelResponse("Could not extract output text from streamed response. " + details.joined(separator: " | "))
-}
-
 func appendLog(type: String, payload: [String: String], writer: EventLogWriter) throws {
     try writer.append(SessionEvent(timestamp: isoNow(), type: type, payload: payload))
-}
-
-func encodeJSON<T: Encodable>(_ value: T) throws -> String {
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.sortedKeys]
-    let data = try encoder.encode(value)
-    guard let string = String(data: data, encoding: .utf8) else {
-        throw AppError.io("Could not encode JSON text")
-    }
-    return string
 }
 
 func jsonObject<T: Encodable>(_ value: T) throws -> Any {
@@ -866,15 +583,6 @@ func compactText(_ text: String, limit: Int) -> String {
     return String(prefix) + "... [truncated \(omitted) chars]"
 }
 
-func serializeJSONObject(_ object: Any) -> String {
-    guard JSONSerialization.isValidJSONObject(object),
-          let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
-          let text = String(data: data, encoding: .utf8) else {
-        return String(describing: object)
-    }
-    return text
-}
-
 func buildPromptCacheKey(sessionID: String) -> String {
     let stable = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
     if stable.isEmpty {
@@ -883,20 +591,6 @@ func buildPromptCacheKey(sessionID: String) -> String {
     let digest = SHA256.hash(data: Data(stable.utf8))
     let hex = digest.prefix(16).map { String(format: "%02x", $0) }.joined()
     return "wisp-\(hex)"
-}
-
-func buildInputTextMessageItem(role: String, text: String) -> ResponseInputItem {
-    .message(
-        role: role,
-        content: [ResponseMessageContent(type: "input_text", text: text)]
-    )
-}
-
-func buildAssistantOutputMessageItem(text: String) -> ResponseInputItem {
-    .message(
-        role: "assistant",
-        content: [ResponseMessageContent(type: "output_text", text: text)]
-    )
 }
 
 func buildToolResult(from output: ToolExecutionOutput, logPath: URL) throws -> ToolResult {
@@ -970,28 +664,22 @@ func isoFileNow() -> String {
     return formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
 }
 
-func loadPromptConfig(promptsDir: URL, repoRoot: URL, wikiRoot: URL) throws -> PromptConfig {
-    let promptPath = promptsDir.appendingPathComponent(promptFileName)
+func loadPromptConfig(repoRoot: URL, wikiRoot: URL) throws -> PromptConfig {
+    let promptPath = repoRoot.appendingPathComponent("prompts").appendingPathComponent(promptFileName)
     let promptTemplate = try loadRequiredTextFile(promptPath, name: promptFileName)
-    let systemPrompt = buildSystemPrompt(
-        promptTemplate: promptTemplate,
-        repoRoot: repoRoot.path,
-        wikiRoot: wikiRoot.path,
-        now: Date()
-    )
+    let repoRootPath = repoRoot.path
+    let wikiRootPath = wikiRoot.path
+    let systemPrompt = promptTemplate
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .replacingOccurrences(of: "[WISP_REPO_ROOT]", with: repoRootPath)
+        .replacingOccurrences(of: "[WISP_WIKI_ROOT]", with: wikiRootPath)
+        + "\n\n"
+        + formatStatusBlock(wikiRoot: wikiRootPath, now: Date())
 
     return PromptConfig(
         systemPrompt: systemPrompt,
         systemPromptSource: promptPath.path
     )
-}
-
-func buildSystemPrompt(promptTemplate: String, repoRoot: String, wikiRoot: String, now: Date) -> String {
-    var trimmedTemplate = promptTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
-    trimmedTemplate = trimmedTemplate.replacingOccurrences(of: "[WISP_REPO_ROOT]", with: repoRoot)
-    trimmedTemplate = trimmedTemplate.replacingOccurrences(of: "[WISP_WIKI_ROOT]", with: wikiRoot)
-    let statusBlock = formatStatusBlock(repoRoot: repoRoot, wikiRoot: wikiRoot, now: now)
-    return trimmedTemplate + "\n\n" + statusBlock
 }
 
 func runInit(config: InitConfig) throws {
@@ -1067,7 +755,7 @@ func initialSchemaTemplate() -> String {
     ].joined(separator: "\n") + "\n"
 }
 
-func formatStatusBlock(repoRoot: String, wikiRoot: String, now: Date) -> String {
+func formatStatusBlock(wikiRoot: String, now: Date) -> String {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime]
     let trimmedWikiRoot = wikiRoot.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1140,7 +828,7 @@ func slugifyFileStem(_ title: String) -> String {
     return slug.isEmpty ? "untitled" : slug
 }
 
-func renderNoteDocument(title: String, summary: String, artifacts: [String], content: String) -> String {
+func renderEntryDocument(title: String, summary: String, artifacts: [String], content: String, extraLines: [String] = []) -> String {
     let normalizedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
     let today = todayString()
     var lines = [
@@ -1148,56 +836,63 @@ func renderNoteDocument(title: String, summary: String, artifacts: [String], con
         "created: \(today)",
         "modified: \(today)",
         "summary: \(normalizeSummaryLine(summary))",
-        renderArtifactsLine(artifacts),
-        ""
+        renderArtifactsLine(artifacts)
     ]
+    lines.append(contentsOf: extraLines)
+    lines.append("")
     if !normalizedContent.isEmpty {
         lines.append(normalizedContent)
         lines.append("")
     }
     return lines.joined(separator: "\n")
+}
+
+func normalizedMetadataValue(_ value: String?, defaultValue: String) -> String {
+    let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? defaultValue : trimmed
+}
+
+func renderNoteDocument(title: String, summary: String, artifacts: [String], content: String) -> String {
+    renderEntryDocument(title: title, summary: summary, artifacts: artifacts, content: content)
 }
 
 func renderTaskDocument(title: String, summary: String, artifacts: [String], content: String, due: String?, time: String?, place: String?, status: String?) -> String {
-    let normalizedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
-    let today = todayString()
-    var lines = [
-        "# \(title.trimmingCharacters(in: .whitespacesAndNewlines))",
-        "created: \(today)",
-        "modified: \(today)",
-        "summary: \(normalizeSummaryLine(summary))",
-        renderArtifactsLine(artifacts),
-        "status: \((status?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? status!.trimmingCharacters(in: .whitespacesAndNewlines) : "open"))",
-        "due: \((due?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? due!.trimmingCharacters(in: .whitespacesAndNewlines) : "none"))",
-        "time: \((time?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? time!.trimmingCharacters(in: .whitespacesAndNewlines) : "none"))",
-        "place: \((place?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? place!.trimmingCharacters(in: .whitespacesAndNewlines) : "none"))",
-        ""
-    ]
-    if !normalizedContent.isEmpty {
-        lines.append(normalizedContent)
-        lines.append("")
-    }
-    return lines.joined(separator: "\n")
+    renderEntryDocument(
+        title: title,
+        summary: summary,
+        artifacts: artifacts,
+        content: content,
+        extraLines: [
+            "status: \(normalizedMetadataValue(status, defaultValue: "open"))",
+            "due: \(normalizedMetadataValue(due, defaultValue: "none"))",
+            "time: \(normalizedMetadataValue(time, defaultValue: "none"))",
+            "place: \(normalizedMetadataValue(place, defaultValue: "none"))"
+        ]
+    )
 }
 
-func createNoteFile(title: String, summary: String, content: String, artifacts: [String], explicitPath: String?, config: CLIConfig) throws -> String {
+func writeNewDocument(document: String, explicitPath: String?, defaultRelativePath: String, config: CLIConfig) throws -> String {
     let target = try resolveNewEntryPath(
         explicitPath: explicitPath,
-        defaultRelativePath: slugifyFileStem(title) + ".md",
+        defaultRelativePath: defaultRelativePath,
         wikiRoot: config.wikiRoot
     )
-    let document = renderNoteDocument(title: title, summary: summary, artifacts: artifacts, content: content)
     try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
     try document.write(to: target, atomically: true, encoding: .utf8)
     return relativeWikiPath(target, wikiRoot: config.wikiRoot)
 }
 
-func createTaskFile(title: String, summary: String, content: String, artifacts: [String], due: String?, time: String?, place: String?, status: String?, explicitPath: String?, config: CLIConfig) throws -> String {
-    let target = try resolveNewEntryPath(
+func createNoteFile(title: String, summary: String, content: String, artifacts: [String], explicitPath: String?, config: CLIConfig) throws -> String {
+    let document = renderNoteDocument(title: title, summary: summary, artifacts: artifacts, content: content)
+    return try writeNewDocument(
+        document: document,
         explicitPath: explicitPath,
-        defaultRelativePath: "tasks/" + slugifyFileStem(title) + ".md",
-        wikiRoot: config.wikiRoot
+        defaultRelativePath: slugifyFileStem(title) + ".md",
+        config: config
     )
+}
+
+func createTaskFile(title: String, summary: String, content: String, artifacts: [String], due: String?, time: String?, place: String?, status: String?, explicitPath: String?, config: CLIConfig) throws -> String {
     let document = renderTaskDocument(
         title: title,
         summary: summary,
@@ -1208,9 +903,12 @@ func createTaskFile(title: String, summary: String, content: String, artifacts: 
         place: place,
         status: status
     )
-    try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-    try document.write(to: target, atomically: true, encoding: .utf8)
-    return relativeWikiPath(target, wikiRoot: config.wikiRoot)
+    return try writeNewDocument(
+        document: document,
+        explicitPath: explicitPath,
+        defaultRelativePath: "tasks/" + slugifyFileStem(title) + ".md",
+        config: config
+    )
 }
 
 func resolveNewEntryPath(explicitPath: String?, defaultRelativePath: String, wikiRoot: URL) throws -> URL {
@@ -1283,14 +981,6 @@ func findWorkspaceConfigPath(startingAt: URL) -> URL? {
         }
         current = parent
     }
-}
-
-func resolveWorkspaceConfigPaths(repoRoot: URL) -> WorkspaceConfigPaths {
-    let dotWisp = repoRoot.appendingPathComponent(".wisp")
-    return WorkspaceConfigPaths(
-        configPath: dotWisp.appendingPathComponent("config.yaml"),
-        configExamplePath: dotWisp.appendingPathComponent("config.yaml.example")
-    )
 }
 
 func makeWorkspaceConfigValues(rawValues: [String: String], configRoot: URL) throws -> WorkspaceConfigValues {
