@@ -1,0 +1,40 @@
+{
+  "id": "case_007_task_create_time_place",
+  "name": "task capture preserves time and place",
+  "goal": "A reminder with due date, time, and place should create one task with those fields.",
+  "tags": ["task_create", "time_place"],
+  "reference_time": "2026-04-17T10:00:00Z",
+  "input": {
+    "capture": "Dinner with Maya tomorrow at 19:30 at Rintaro."
+  },
+  "initial_workspace": {
+    "files": []
+  },
+  "expect": {
+    "tool_calls": {
+      "must_include": ["task"],
+      "must_not_include": ["note"]
+    },
+    "counts": {
+      "notes": 0,
+      "tasks": 1
+    },
+    "files": [
+      {
+        "kind": "task",
+        "path_contains": ["maya"],
+        "title_contains": ["maya"],
+        "summary_contains": ["maya"],
+        "status": "open",
+        "due": "relative:tomorrow",
+        "time": "19:30",
+        "place": "Rintaro",
+        "must_be_new": true,
+        "must_not_duplicate": true
+      }
+    ],
+    "reply": {
+      "must_contain": ["created", "task"]
+    }
+  }
+}

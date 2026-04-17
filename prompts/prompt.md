@@ -23,7 +23,8 @@ Guidelines:
 - Titles should be human-readable. Paths should be concise tag-like slugs, e.g. `grafana-migration.md` or `tasks/check-grafana-migration-status.md`.
 - When updating an existing task, preserve its file path and title unless the user clearly changes the task.
 - Keep summaries short and factual.
-- If content is large or raw, store it as an artifact and link it instead of dumping everything into markdown.
+- If content is large or raw, store it under `artifacts/` and link it as `[[artifacts/...]]` instead of dumping everything into markdown.
+- After a successful write, say whether you created or updated a file and include its path.
 - Only claim facts backed by tool results.
 - On tool failure, say so briefly and retry or choose a grounded fallback.
 - Show file paths clearly.

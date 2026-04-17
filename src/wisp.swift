@@ -746,6 +746,7 @@ func initialSchemaTemplate() -> String {
         "modified: YYYY-MM-DD",
         "summary: one line summary",
         "artifacts: none or [[path]], [[path]]",
+        "Store raw workspace files under artifacts/ and link them as [[artifacts/...]].",
         "",
         "Tasks may add:",
         "status: open",
@@ -813,10 +814,24 @@ func normalizeSummaryLine(_ summary: String) -> String {
         .trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
+func normalizeArtifactReference(_ value: String) -> String? {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    if trimmed.hasPrefix("[[") && trimmed.hasSuffix("]]") {
+        let start = trimmed.index(trimmed.startIndex, offsetBy: 2)
+        let end = trimmed.index(trimmed.endIndex, offsetBy: -2)
+        let inner = trimmed[start..<end].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !inner.isEmpty else { return nil }
+        return "[[\(inner)]]"
+    }
+    return "[[\(trimmed)]]"
+}
+
 func renderArtifactsLine(_ artifacts: [String]) -> String {
+    var seen = Set<String>()
     let cleaned = artifacts
-        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        .filter { !$0.isEmpty }
+        .compactMap(normalizeArtifactReference)
+        .filter { seen.insert($0).inserted }
     if cleaned.isEmpty { return "artifacts: none" }
     return "artifacts: " + cleaned.joined(separator: ", ")
 }

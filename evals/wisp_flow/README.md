@@ -32,6 +32,8 @@ The runner expects a JSON file shaped like `evals/wisp_flow_submission.template.
 
 By default, the harness writes submissions under `evals/runs/`, which is gitignored.
 
+Both the harness and runner accept repeated `--case <id>` filters for focused iteration.
+
 For each case result, provide:
 - `case_id`
 - `tool_calls`: ordered list of tool calls with at least a `name`
@@ -43,3 +45,4 @@ The runner compares only the final workspace, tool usage, and final reply. It do
 ## Notes
 
 - `relative:*` date markers are resolved relative to the case timestamp.
+- `case_007_task_create_time_place` covers task captures that include both `time` and `place`.

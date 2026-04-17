@@ -263,11 +263,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("submission", help="Path to submission JSON")
     parser.add_argument("--cases-dir", default="evals/wisp_flow", help="Directory of eval case JSON files")
+    parser.add_argument("--case", action="append", default=[], help="Score only matching case id(s)")
     args = parser.parse_args()
 
     cases_dir = Path(args.cases_dir)
     case_paths = sorted(p for p in cases_dir.glob("*.json") if p.name != "README.md")
     cases = [load_json(p) for p in case_paths]
+    if args.case:
+        wanted = set(args.case)
+        cases = [case for case in cases if case["id"] in wanted]
     submission = load_json(Path(args.submission))
     results_by_id = {item["case_id"]: item for item in submission.get("results", [])}
 
