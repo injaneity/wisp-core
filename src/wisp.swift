@@ -5,12 +5,15 @@ import Darwin
 struct CLIConfig {
     let verbose: Bool
     let logPath: URL
+    let logWriter: EventLogWriter
     let codex: CodexSettings
     let promptConfig: PromptConfig
     let sessionID: String
     let repoRoot: URL
     let wikiRoot: URL
+    let workingDirectory: URL
     let workspaceConfigPath: URL?
+    let conversationState: ConversationState
 }
 
 struct RuntimeDependency {
@@ -26,14 +29,7 @@ struct InitConfig {
     let configExamplePath: URL
 }
 
-struct TurnOutput: Codable {
-    let message: String?
-    let scratchpad: String?
-    let code: String?
-    let continue_turn: Bool
-}
-
-struct LuaRunOutput: Codable {
+struct ToolExecutionOutput: Codable {
     let status_code: Int
     let stdout: String
     let stderr: String
@@ -41,7 +37,7 @@ struct LuaRunOutput: Codable {
     let runtime_duration_ms: Int
 }
 
-struct ToolResultForModel: Codable {
+struct ToolResult: Codable {
     let status_code: Int
     let text: String
     let runtime_duration_ms: Int
@@ -50,36 +46,65 @@ struct ToolResultForModel: Codable {
     let artifact_path: String?
 }
 
-struct InternalToolOutput: Codable {
-    let status_code: Int
-    let stdout_b64: String
-    let stderr_b64: String
-}
-
-struct CacheStats {
-    let inputTokens: Int
-    let cachedTokens: Int
-    let percent: Double
-}
-
-struct ModelCallOutput {
-    let turn: TurnOutput
-    let cacheStats: CacheStats?
-    let promptCacheKey: String?
-    let instructionsHash: String
-    let inputHash: String
-    let requestBodyHash: String
-}
-
-struct DecodedModelText {
-    let text: String
-    let cacheStats: CacheStats?
-}
-
 struct SessionEvent: Codable {
     let timestamp: String
     let type: String
     let payload: [String: String]
+}
+
+final class EventLogWriter {
+    private let path: URL
+    private let lock = NSLock()
+    private var fileHandle: FileHandle?
+
+    init(path: URL) {
+        self.path = path
+    }
+
+    func reopen() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        try reopenLocked()
+    }
+
+    func append(_ event: SessionEvent) throws {
+        let data = try JSONEncoder().encode(event)
+        guard var line = String(data: data, encoding: .utf8) else {
+            throw AppError.io("Could not encode log event")
+        }
+        line.append("\n")
+        guard let lineData = line.data(using: .utf8) else {
+            throw AppError.io("Could not encode log event line data")
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+        if fileHandle == nil {
+            try reopenLocked()
+        }
+        guard let fileHandle else {
+            throw AppError.io("Could not open log file at \(path.path)")
+        }
+        try fileHandle.seekToEnd()
+        fileHandle.write(lineData)
+    }
+
+    func close() {
+        lock.lock()
+        defer { lock.unlock() }
+        try? fileHandle?.close()
+        fileHandle = nil
+    }
+
+    private func reopenLocked() throws {
+        try? fileHandle?.close()
+        fileHandle = nil
+        if !FileManager.default.fileExists(atPath: path.path) {
+            FileManager.default.createFile(atPath: path.path, contents: nil)
+        }
+        fileHandle = try FileHandle(forWritingTo: path)
+        try fileHandle?.seekToEnd()
+    }
 }
 
 struct CodexSettings {
@@ -107,68 +132,9 @@ struct WorkspaceConfigPaths {
     let configExamplePath: URL
 }
 
-struct ResponsesRequest: Encodable {
-    let model: String
-    let instructions: String
-    let prompt_cache_key: String
-    let store: Bool
-    let stream: Bool
-    let reasoning: ResponsesReasoning
-    let input: [ResponseInputItem]
-    let include: [String]
-    let text: ResponsesTextConfig
-}
-
-struct ResponsesReasoning: Encodable {
-    let effort: String
-    let summary: String
-}
-
-struct ResponsesTextConfig: Encodable {
-    let format: ResponsesTextFormat
-}
-
-struct ResponsesTextFormat: Encodable {
-    let type: String
-    let name: String
-    let strict: Bool
-    let schema: ResponseSchema
-}
-
-struct ResponseSchema: Encodable {
-    let type: String
-    let properties: [String: ResponseSchemaProperty]
-    let required: [String]
-    let additionalProperties: Bool
-}
-
-struct ResponseSchemaProperty: Encodable {
-    let type: ResponseSchemaType
-}
-
-enum ResponseSchemaType: Encodable {
-    case single(String)
-    case multi([String])
-
-    func encode(to encoder: Encoder) throws {
-        var singleValue = encoder.singleValueContainer()
-        switch self {
-        case .single(let value):
-            try singleValue.encode(value)
-        case .multi(let values):
-            try singleValue.encode(values)
-        }
-    }
-}
-
 struct ResponseMessageContent: Encodable {
     let type: String
     let text: String
-}
-
-struct LuaExecArguments: Encodable {
-    let name: String
-    let args: String
 }
 
 enum ResponseInputItem: Encodable {
@@ -210,7 +176,6 @@ enum AppError: Error, CustomStringConvertible {
     case missingOAuthToken
     case invalidModelResponse(String)
     case requestFailed(String)
-    case luaUnavailable
     case io(String)
 
     var description: String {
@@ -221,8 +186,6 @@ enum AppError: Error, CustomStringConvertible {
             return "Invalid model response: \(message)"
         case .requestFailed(let message):
             return "Request failed: \(message)"
-        case .luaUnavailable:
-            return "Lua runtime is unavailable. Install `lua` and ensure it is in PATH."
         case .io(let message):
             return "IO error: \(message)"
         }
@@ -238,9 +201,6 @@ let readOrBashMaxBytes = 50 * 1024
 struct WispMain {
     static func main() {
         do {
-            if try runInternalToolModeIfRequested() {
-                return
-            }
             if try runDependencyInstallModeIfRequested() {
                 return
             }
@@ -248,6 +208,8 @@ struct WispMain {
             let config = try parseArgs()
             try prepareDirectories(for: config.logPath)
             try resetSessionLog(logPath: config.logPath)
+            try config.logWriter.reopen()
+            config.conversationState.reset()
             if config.verbose {
                 print("[verbose] prompts.system: \(config.promptConfig.systemPromptSource)")
                 if let workspaceConfigPath = config.workspaceConfigPath {
@@ -263,11 +225,15 @@ struct WispMain {
                 let command = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 if command == "exit" {
                     try resetSessionLog(logPath: config.logPath)
+                    config.conversationState.reset()
+                    config.logWriter.close()
                     print("session ended.")
                     break
                 }
                 if command == "restart" {
                     try resetSessionLog(logPath: config.logPath)
+                    try config.logWriter.reopen()
+                    config.conversationState.reset()
                     print("session restarted.")
                     continue
                 }
@@ -285,7 +251,6 @@ struct WispMain {
 
 func runtimeDependencies() -> [RuntimeDependency] {
     [
-        RuntimeDependency(id: "lua", command: "lua", required: true),
         RuntimeDependency(id: "ripgrep", command: "rg", required: false)
     ]
 }
@@ -336,10 +301,10 @@ func runDependencyInstallModeIfRequested() throws -> Bool {
 
 func installRuntimeDependencies() throws {
     guard isCommandAvailable("brew") else {
-        throw AppError.io("Could not auto-install dependencies because Homebrew is unavailable. Install manually: lua and ripgrep.")
+        throw AppError.io("Could not auto-install dependencies because Homebrew is unavailable. Install manually: ripgrep.")
     }
-    print("installing runtime dependencies (lua, ripgrep) via Homebrew...")
-    let result = try runBashCommand(command: "brew install lua ripgrep", timeoutMs: 10 * 60 * 1000)
+    print("installing optional runtime dependencies (ripgrep) via Homebrew...")
+    let result = try runBashCommand(command: "brew install ripgrep", timeoutMs: 10 * 60 * 1000)
     if result.statusCode != 0 {
         let details = [result.stdout, result.stderr]
             .joined(separator: "\n")
@@ -375,126 +340,14 @@ func ensureRuntimeDependencies() throws {
         }
     }
 
-    throw AppError.io("Missing required dependencies: \(requiredNames). Install with `wisp --install-deps` or manually install: lua.")
+    throw AppError.io("Missing required dependencies: \(requiredNames). Install with `wisp --install-deps` or manually install them.")
 }
 
-func runInternalToolModeIfRequested() throws -> Bool {
-    let args = Array(CommandLine.arguments.dropFirst())
-    guard let mode = args.first else { return false }
-    if mode == "--tool-bash" {
-        try runBashHelperMode(args: Array(args.dropFirst()))
-        return true
-    }
-    if mode == "--tool-write" {
-        try runWriteHelperMode(args: Array(args.dropFirst()))
-        return true
-    }
-    return false
-}
-
-func runBashHelperMode(args: [String]) throws {
-    var commandFile: String?
-    var timeoutMs = 15_000
-    var index = 0
-    while index < args.count {
-        let arg = args[index]
-        switch arg {
-        case "--command-file":
-            index += 1
-            guard index < args.count else {
-                throw AppError.io("Missing value for --command-file")
-            }
-            commandFile = args[index]
-        case "--timeout-ms":
-            index += 1
-            guard index < args.count else {
-                throw AppError.io("Missing value for --timeout-ms")
-            }
-            timeoutMs = max(1, Int(args[index]) ?? timeoutMs)
-        default:
-            throw AppError.io("Unknown --tool-bash argument: \(arg)")
-        }
-        index += 1
-    }
-
-    guard let commandFile else {
-        throw AppError.io("--tool-bash requires --command-file")
-    }
-    let command = try String(contentsOfFile: commandFile, encoding: .utf8)
-    let result = try runBashCommand(command: command, timeoutMs: timeoutMs)
-    let encoded = try encodeJSON(
-        InternalToolOutput(
-            status_code: result.statusCode,
-            stdout_b64: Data(result.stdout.utf8).base64EncodedString(),
-            stderr_b64: Data(result.stderr.utf8).base64EncodedString()
-        )
-    )
-    print(encoded)
-}
-
-func runWriteHelperMode(args: [String]) throws {
-    var path: String?
-    var contentFile: String?
-    var index = 0
-    while index < args.count {
-        let arg = args[index]
-        switch arg {
-        case "--path":
-            index += 1
-            guard index < args.count else {
-                throw AppError.io("Missing value for --path")
-            }
-            path = args[index]
-        case "--content-file":
-            index += 1
-            guard index < args.count else {
-                throw AppError.io("Missing value for --content-file")
-            }
-            contentFile = args[index]
-        default:
-            throw AppError.io("Unknown --tool-write argument: \(arg)")
-        }
-        index += 1
-    }
-
-    guard let path else {
-        throw AppError.io("--tool-write requires --path")
-    }
-    guard let contentFile else {
-        throw AppError.io("--tool-write requires --content-file")
-    }
-
-    let content = try String(contentsOfFile: contentFile, encoding: .utf8)
-    let context = try loadWikiRuntimeContextFromEnvironment()
-    let stdout: String
-    do {
-        stdout = try handleWikiWrite(rawPath: path, content: content, context: context)
-    } catch {
-        let encoded = try encodeJSON(
-            InternalToolOutput(
-                status_code: 1,
-                stdout_b64: Data().base64EncodedString(),
-                stderr_b64: Data(String(describing: error).utf8).base64EncodedString()
-            )
-        )
-        print(encoded)
-        return
-    }
-
-    let encoded = try encodeJSON(
-        InternalToolOutput(
-            status_code: 0,
-            stdout_b64: Data(stdout.utf8).base64EncodedString(),
-            stderr_b64: Data().base64EncodedString()
-        )
-    )
-    print(encoded)
-}
-
-func runBashCommand(command: String, timeoutMs: Int) throws -> (statusCode: Int, stdout: String, stderr: String) {
+func runBashCommand(command: String, timeoutMs: Int, currentDirectory: URL? = nil) throws -> (statusCode: Int, stdout: String, stderr: String) {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/bin/zsh")
     process.arguments = ["-lc", command]
+    process.currentDirectoryURL = currentDirectory
 
     var env = ProcessInfo.processInfo.environment
     if let rgDir = resolveBundledRGDirectory() {
@@ -538,29 +391,20 @@ func runBashCommand(command: String, timeoutMs: Int) throws -> (statusCode: Int,
         group.leave()
     }
 
-    let start = Date()
-    var didTimeout = false
-    var sentTerminate = false
-    var terminateAt: Date?
-    while process.isRunning {
-        if !didTimeout {
-            let elapsedMs = Int(Date().timeIntervalSince(start) * 1000)
-            if elapsedMs >= timeoutMs {
-                didTimeout = true
-                sentTerminate = true
-                terminateAt = Date()
-                process.terminate()
-            }
-        } else if sentTerminate, let terminateAt {
-            let drainWindowMs = Int(Date().timeIntervalSince(terminateAt) * 1000)
-            if drainWindowMs >= 1500 {
-                break
-            }
-        }
-        usleep(50_000)
+    let exitSemaphore = DispatchSemaphore(value: 0)
+    process.terminationHandler = { _ in
+        exitSemaphore.signal()
     }
-    if process.isRunning {
-        kill(process.processIdentifier, SIGKILL)
+
+    var didTimeout = false
+    if exitSemaphore.wait(timeout: .now() + .milliseconds(timeoutMs)) == .timedOut {
+        didTimeout = true
+        process.terminate()
+        if exitSemaphore.wait(timeout: .now() + .milliseconds(1_500)) == .timedOut,
+           process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+            _ = exitSemaphore.wait(timeout: .now() + .milliseconds(500))
+        }
     }
     process.waitUntilExit()
     group.wait()
@@ -697,12 +541,15 @@ func parseArgs() throws -> CLIConfig {
     return CLIConfig(
         verbose: verbose,
         logPath: logPath,
+        logWriter: EventLogWriter(path: logPath),
         codex: codex,
         promptConfig: promptConfig,
         sessionID: UUID().uuidString.lowercased(),
         repoRoot: workspaceConfig.repoRoot,
         wikiRoot: wikiRoot,
-        workspaceConfigPath: workspaceConfig.configPath
+        workingDirectory: URL(fileURLWithPath: FileManager.default.currentDirectoryPath).standardizedFileURL,
+        workspaceConfigPath: workspaceConfig.configPath,
+        conversationState: ConversationState()
     )
 }
 
@@ -729,234 +576,7 @@ func resetSessionLog(logPath: URL) throws {
 }
 
 func processUserTurn(_ userMessage: String, config: CLIConfig) throws {
-    try logEvent(type: "user_message", payload: ["text": userMessage], config: config)
-    var invalidResponseRetries = 0
-
-    while true {
-        try logEvent(type: "step", payload: ["name": "construct_context", "state": "started"], config: config)
-        let replayResult = try timed {
-            try buildSessionInputItems(logPath: config.logPath)
-        }
-        try logEvent(
-            type: "step",
-            payload: ["name": "construct_context", "state": "finished", "duration_ms": String(replayResult.durationMs)],
-            config: config
-        )
-        try logEvent(
-            type: "context_constructed",
-            payload: [
-                "events": String(replayResult.value.eventCount),
-                "duration_ms": String(replayResult.durationMs)
-            ],
-            config: config
-        )
-
-        try logEvent(type: "step", payload: ["name": "model_call", "state": "started"], config: config)
-        let modelResult: (value: ModelCallOutput, durationMs: Int)
-        do {
-            modelResult = try timed {
-                try callModel(
-                    replayInputItems: replayResult.value.inputItems,
-                    promptConfig: config.promptConfig,
-                    codex: config.codex,
-                    sessionID: config.sessionID
-                )
-            }
-        } catch let error as AppError {
-            if case .invalidModelResponse(let message) = error {
-                try logInvalidModelFeedback(message: message, config: config)
-                invalidResponseRetries += 1
-                if invalidResponseRetries >= 3 {
-                    throw AppError.invalidModelResponse("Model produced invalid output \(invalidResponseRetries) times in a row: \(message)")
-                }
-                continue
-            }
-            throw error
-        }
-        try logEvent(
-            type: "step",
-            payload: ["name": "model_call", "state": "finished", "duration_ms": String(modelResult.durationMs)],
-            config: config
-        )
-        var modelCallPayload: [String: String] = [
-            "duration_ms": String(modelResult.durationMs)
-        ]
-        modelCallPayload["instructions_hash"] = modelResult.value.instructionsHash
-        modelCallPayload["input_hash"] = modelResult.value.inputHash
-        modelCallPayload["request_body_hash"] = modelResult.value.requestBodyHash
-        if let key = modelResult.value.promptCacheKey, !key.isEmpty {
-            modelCallPayload["prompt_cache_key"] = key
-        }
-        if let cache = modelResult.value.cacheStats {
-            modelCallPayload["cache_percent"] = formatPercent(cache.percent)
-            modelCallPayload["cache_cached_tokens"] = String(cache.cachedTokens)
-            modelCallPayload["cache_input_tokens"] = String(cache.inputTokens)
-        }
-        try logEvent(type: "model_call", payload: modelCallPayload, config: config)
-
-        let turn: TurnOutput
-        do {
-            turn = try validateTurnOutput(
-                modelResult.value.turn,
-                userMessage: userMessage,
-                replayEventCount: replayResult.value.eventCount,
-                lastReplayEventType: replayResult.value.lastReplayEventType
-            )
-        } catch let error as AppError {
-            if case .invalidModelResponse(let message) = error {
-                try logInvalidModelFeedback(message: message, config: config)
-                invalidResponseRetries += 1
-                if invalidResponseRetries >= 3 {
-                    throw AppError.invalidModelResponse("Model produced invalid output \(invalidResponseRetries) times in a row: \(message)")
-                }
-                continue
-            }
-            throw error
-        }
-        invalidResponseRetries = 0
-
-        let modelPayload: [String: String] = [
-            "message": turn.message ?? "",
-            "scratchpad": turn.scratchpad ?? "",
-            "code": turn.code ?? "",
-            "continue_turn": String(turn.continue_turn)
-        ]
-        try logEvent(type: "model_response", payload: modelPayload, config: config)
-
-        let trimmedMessage = turn.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let trimmedCode = turn.code?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !trimmedMessage.isEmpty {
-            print("assistant> \(trimmedMessage)")
-        }
-        if trimmedCode.isEmpty {
-            if turn.continue_turn {
-                continue
-            }
-            return
-        }
-
-        let callID = "call_\(UUID().uuidString.lowercased())"
-        try logEvent(type: "tool_call", payload: ["code": trimmedCode, "call_id": callID], config: config)
-        try logEvent(type: "step", payload: ["name": "lua_runtime", "state": "started"], config: config)
-        let luaStart = Date()
-        var luaOutput = LuaRunOutput(
-            status_code: 1,
-            stdout: "",
-            stderr: "",
-            truncation_mode: "head",
-            runtime_duration_ms: 0
-        )
-        var luaDurationMs = 0
-        do {
-            let luaResult = try timed {
-                try executeLua(
-                    code: trimmedCode,
-                    runtimeRoot: config.repoRoot,
-                    workspaceRoot: config.wikiRoot
-                )
-            }
-            luaOutput = luaResult.value
-            luaDurationMs = luaResult.durationMs
-            try logEvent(
-                type: "step",
-                payload: ["name": "lua_runtime", "state": "finished", "duration_ms": String(luaDurationMs)],
-                config: config
-            )
-        } catch {
-            luaDurationMs = max(0, Int(Date().timeIntervalSince(luaStart) * 1000))
-            try logEvent(
-                type: "step",
-                payload: ["name": "lua_runtime", "state": "failed", "duration_ms": String(luaDurationMs)],
-                config: config
-            )
-            luaOutput = LuaRunOutput(
-                status_code: 1,
-                stdout: "",
-                stderr: "Lua runtime error: \(error)",
-                truncation_mode: "head",
-                runtime_duration_ms: luaDurationMs
-            )
-        }
-        let modelToolResult = try buildToolResultForModel(from: luaOutput, logPath: config.logPath)
-        let toolResultString = try encodeReplayToolResult(modelToolResult)
-        try logEvent(
-            type: "tool_result",
-            payload: [
-                "result": toolResultString,
-                "status_code": String(modelToolResult.status_code),
-                "runtime_duration_ms": String(modelToolResult.runtime_duration_ms),
-                "call_id": callID,
-                "truncated": String(modelToolResult.truncated),
-                "total_bytes": String(modelToolResult.total_bytes),
-                "artifact_path": modelToolResult.artifact_path ?? ""
-            ],
-            config: config
-        )
-    }
-}
-
-func callModel(
-    replayInputItems: [ResponseInputItem],
-    promptConfig: PromptConfig,
-    codex: CodexSettings,
-    sessionID: String
-) throws -> ModelCallOutput {
-    let token = try loadCodexOAuthToken(authFile: codex.authFile)
-    let url = try CodexOAuth.resolveResponsesURL(baseURL: codex.baseURL)
-    var request = URLRequest(url: url)
-    request.httpMethod = "POST"
-
-    let instructions = promptConfig.systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-    let promptCacheKey = buildPromptCacheKey(sessionID: sessionID)
-    let headers = try CodexOAuth.buildSSEHeaders(token: token, sessionID: promptCacheKey)
-    for (name, value) in headers {
-        request.setValue(value, forHTTPHeaderField: name)
-    }
-
-    let payload = ResponsesRequest(
-        model: codex.model,
-        instructions: instructions,
-        prompt_cache_key: promptCacheKey,
-        store: false,
-        stream: true,
-        reasoning: ResponsesReasoning(
-            effort: codex.reasoningEffort,
-            summary: "auto"
-        ),
-        input: replayInputItems,
-        include: ["reasoning.encrypted_content"],
-        text: ResponsesTextConfig(
-            format: ResponsesTextFormat(
-                type: "json_schema",
-                name: "wisp_turn_output",
-                strict: true,
-                schema: makeResponseSchema()
-            )
-        )
-    )
-
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.sortedKeys]
-    let requestBody = try encoder.encode(payload)
-    request.httpBody = requestBody
-    let responseData = try httpRequest(request)
-    let decoded = try decodeModelText(from: responseData)
-    guard let data = decoded.text.data(using: .utf8) else {
-        throw AppError.invalidModelResponse("Model text was not utf8")
-    }
-    do {
-        let turn = try JSONDecoder().decode(TurnOutput.self, from: data)
-        return ModelCallOutput(
-            turn: turn,
-            cacheStats: decoded.cacheStats,
-            promptCacheKey: promptCacheKey,
-            instructionsHash: sha256Hex(instructions),
-            inputHash: sha256HexForEncodable(replayInputItems),
-            requestBodyHash: sha256Hex(data: requestBody)
-        )
-    } catch {
-        throw AppError.invalidModelResponse("Could not decode TurnOutput. Raw text: \(decoded.text)")
-    }
+    try runAgentLoop(userMessage, config: config)
 }
 
 func loadCodexOAuthToken(authFile: URL) throws -> String {
@@ -973,108 +593,6 @@ func loadCodexOAuthToken(authFile: URL) throws -> String {
         throw AppError.missingOAuthToken
     }
     return token
-}
-
-func executeLua(code: String, runtimeRoot: URL, workspaceRoot: URL) throws -> LuaRunOutput {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-    let runtimePath = runtimeRoot
-        .appendingPathComponent("scripts/lua_runtime.lua").path
-    process.arguments = ["lua", runtimePath]
-    let codexSettings = resolveCodexSettings(
-        workspaceConfig: try resolveWorkspaceConfig(startingAt: runtimeRoot)
-    )
-    var runtimeEnv = ProcessInfo.processInfo.environment
-    runtimeEnv["WISP_CHAT_HELPER_BIN"] = CommandLine.arguments[0]
-    runtimeEnv["WISP_WORKSPACE_ROOT"] = workspaceRoot.path
-    runtimeEnv["WISP_REPO_ROOT"] = runtimeRoot.path
-    runtimeEnv["WISP_WIKI_ROOT"] = workspaceRoot.path
-    runtimeEnv["WISP_CODEX_BASE_URL"] = codexSettings.baseURL
-    runtimeEnv["WISP_CODEX_AUTH_FILE"] = codexSettings.authFile.path
-    runtimeEnv["WISP_CODEX_MODEL"] = codexSettings.model
-    runtimeEnv["WISP_CODEX_REASONING_EFFORT"] = codexSettings.reasoningEffort
-    process.environment = runtimeEnv
-
-    let inputPipe = Pipe()
-    let outputPipe = Pipe()
-    process.standardInput = inputPipe
-    process.standardOutput = outputPipe
-    // Merge stderr into stdout and drain continuously to avoid pipe-buffer deadlocks.
-    process.standardError = outputPipe
-
-    do {
-        try process.run()
-    } catch {
-        throw AppError.luaUnavailable
-    }
-
-    if let data = code.data(using: .utf8) {
-        inputPipe.fileHandleForWriting.write(data)
-    }
-    inputPipe.fileHandleForWriting.closeFile()
-
-    let timeoutMs = Int(ProcessInfo.processInfo.environment["WISP_LUA_TIMEOUT_MS"] ?? "") ?? 15_000
-    var didTimeout = false
-    let timeoutTask = DispatchWorkItem {
-        guard process.isRunning else { return }
-        didTimeout = true
-        process.terminate()
-        usleep(200_000)
-        if process.isRunning {
-            kill(process.processIdentifier, SIGKILL)
-        }
-    }
-    DispatchQueue.global(qos: .userInitiated).asyncAfter(
-        deadline: .now() + .milliseconds(timeoutMs),
-        execute: timeoutTask
-    )
-
-    let merged = outputPipe.fileHandleForReading.readDataToEndOfFile()
-    timeoutTask.cancel()
-    process.waitUntilExit()
-    guard let text = String(data: merged, encoding: .utf8) else {
-        throw AppError.invalidModelResponse("Lua output was not utf8")
-    }
-
-    if didTimeout {
-        let preview = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let suffix = preview.isEmpty ? "" : " Output before timeout: \(preview)"
-        throw AppError.requestFailed("Lua runtime timed out after \(timeoutMs)ms.\(suffix)")
-    }
-
-    if process.terminationStatus != 0 {
-        throw AppError.requestFailed("Lua process failed: \(text)")
-    }
-
-    guard let data = text.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8) else {
-        throw AppError.invalidModelResponse("Lua json output was invalid utf8")
-    }
-    do {
-        return try JSONDecoder().decode(LuaRunOutput.self, from: data)
-    } catch {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let allLines = trimmed.components(separatedBy: .newlines)
-        for i in stride(from: allLines.count - 1, through: 0, by: -1) {
-            let candidate = allLines[i].trimmingCharacters(in: .whitespacesAndNewlines)
-            guard candidate.hasPrefix("{"), candidate.hasSuffix("}") else { continue }
-            if let lineData = candidate.data(using: .utf8),
-               var parsed = try? JSONDecoder().decode(LuaRunOutput.self, from: lineData) {
-                let prefix = allLines[..<i].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-                if !prefix.isEmpty {
-                    let mergedStdout = parsed.stdout.isEmpty ? prefix : prefix + "\n" + parsed.stdout
-                    parsed = LuaRunOutput(
-                        status_code: parsed.status_code,
-                        stdout: mergedStdout,
-                        stderr: parsed.stderr,
-                        truncation_mode: parsed.truncation_mode,
-                        runtime_duration_ms: parsed.runtime_duration_ms
-                    )
-                }
-                return parsed
-            }
-        }
-        throw AppError.invalidModelResponse("Could not decode Lua output. Raw: \(text)")
-    }
 }
 
 func httpRequest(_ request: URLRequest) throws -> Data {
@@ -1159,11 +677,11 @@ func extractModelText(from responseObject: [String: Any]) -> String? {
     return text.isEmpty ? nil : text
 }
 
-func decodeModelText(from responseData: Data) throws -> DecodedModelText {
+func decodeTextResponse(from responseData: Data) throws -> String {
     if let json = try? JSONSerialization.jsonObject(with: responseData, options: []),
        let obj = json as? [String: Any] {
         if let text = extractModelText(from: obj) {
-            return DecodedModelText(text: text, cacheStats: extractCacheStats(from: obj))
+            return text
         }
     }
 
@@ -1172,7 +690,6 @@ func decodeModelText(from responseData: Data) throws -> DecodedModelText {
     }
     var collectedOutput = ""
     var currentDataLines: [String] = []
-    var cacheStats: CacheStats?
     var streamFailureMessage: String?
     var lastCompletedResponsePreview: String?
     var lastUnparsedEventPreview: String?
@@ -1217,7 +734,6 @@ func decodeModelText(from responseData: Data) throws -> DecodedModelText {
         }
         if eventType == "response.completed" {
             if let responseObj = event["response"] as? [String: Any] {
-                cacheStats = extractCacheStats(from: responseObj)
                 let final = extractModelText(from: responseObj)
                 lastCompletedResponsePreview = compactText(serializeJSONObject(responseObj), limit: 1200)
                 if let final {
@@ -1236,7 +752,7 @@ func decodeModelText(from responseData: Data) throws -> DecodedModelText {
             if result.done {
                 let final = (result.output ?? collectedOutput).trimmingCharacters(in: .whitespacesAndNewlines)
                 if !final.isEmpty {
-                    return DecodedModelText(text: final, cacheStats: cacheStats)
+                    return final
                 }
                 break
             }
@@ -1250,12 +766,12 @@ func decodeModelText(from responseData: Data) throws -> DecodedModelText {
     if tail.done {
         let final = (tail.output ?? collectedOutput).trimmingCharacters(in: .whitespacesAndNewlines)
         if !final.isEmpty {
-            return DecodedModelText(text: final, cacheStats: cacheStats)
+            return final
         }
     }
 
     if let final = nonEmptyText(collectedOutput) {
-        return DecodedModelText(text: final, cacheStats: cacheStats)
+        return final
     }
     if let streamFailureMessage, !streamFailureMessage.isEmpty {
         throw AppError.invalidModelResponse("Responses stream failed: \(streamFailureMessage)")
@@ -1277,91 +793,8 @@ func decodeModelText(from responseData: Data) throws -> DecodedModelText {
     throw AppError.invalidModelResponse("Could not extract output text from streamed response. " + details.joined(separator: " | "))
 }
 
-func appendLog(type: String, payload: [String: String], logPath: URL) throws {
-    let event = SessionEvent(timestamp: isoNow(), type: type, payload: payload)
-    let data = try JSONEncoder().encode(event)
-    guard var line = String(data: data, encoding: .utf8) else {
-        throw AppError.io("Could not encode log event")
-    }
-    line.append("\n")
-    if let fileHandle = try? FileHandle(forWritingTo: logPath) {
-        try fileHandle.seekToEnd()
-        if let lineData = line.data(using: .utf8) {
-            fileHandle.write(lineData)
-        }
-        try fileHandle.close()
-    } else {
-        try line.write(to: logPath, atomically: true, encoding: .utf8)
-    }
-}
-
-func logInvalidModelFeedback(message: String, config: CLIConfig) throws {
-    try logEvent(
-        type: "runtime_feedback",
-        payload: [
-            "text": "Your previous response was invalid for the wisp turn contract: \(message). Fix the JSON and continue. If you include `code`, set `continue_turn` to true. Do not end the turn immediately after a tool result."
-        ],
-        config: config
-    )
-}
-
-func buildSessionInputItems(logPath: URL) throws -> (inputItems: [ResponseInputItem], eventCount: Int, lastReplayEventType: String?) {
-    guard let data = FileManager.default.contents(atPath: logPath.path),
-          let content = String(data: data, encoding: .utf8) else {
-        return ([], 0, nil)
-    }
-    let lines = content.split(separator: "\n")
-    var inputItems: [ResponseInputItem] = []
-    let replayTypes: Set<String> = ["user_message", "runtime_feedback", "model_response", "tool_call", "tool_result"]
-    var replayEventCount = 0
-    var lastReplayEventType: String?
-    for line in lines {
-        guard let rowData = line.data(using: .utf8),
-              let event = try? JSONDecoder().decode(SessionEvent.self, from: rowData) else {
-            continue
-        }
-        guard replayTypes.contains(event.type) else {
-            continue
-        }
-        replayEventCount += 1
-        lastReplayEventType = event.type
-        switch event.type {
-        case "user_message":
-            let text = event.payload["text"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !text.isEmpty {
-                inputItems.append(buildInputTextMessageItem(role: "user", text: text))
-            }
-        case "runtime_feedback":
-            let text = event.payload["text"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !text.isEmpty {
-                inputItems.append(buildInputTextMessageItem(role: "user", text: text))
-            }
-        case "model_response":
-            let text = try buildTurnReplayText(payload: event.payload)
-            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                inputItems.append(buildAssistantOutputMessageItem(text: text))
-            }
-        case "tool_call":
-            let code = event.payload["code"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if code.isEmpty { continue }
-            let callID = event.payload["call_id"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if callID.isEmpty { continue }
-            let arguments = try encodeJSON(LuaExecArguments(name: "lua.exec", args: code))
-            inputItems.append(.functionCall(callID: callID, name: "wisp_code", arguments: arguments))
-        case "tool_result":
-            let output = event.payload["result"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if output.isEmpty { continue }
-            let callID = event.payload["call_id"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !callID.isEmpty {
-                inputItems.append(.functionCallOutput(callID: callID, output: output))
-            } else {
-                inputItems.append(buildAssistantOutputMessageItem(text: "Tool result: \(output)"))
-            }
-        default:
-            continue
-        }
-    }
-    return (inputItems, replayEventCount, lastReplayEventType)
+func appendLog(type: String, payload: [String: String], writer: EventLogWriter) throws {
+    try writer.append(SessionEvent(timestamp: isoNow(), type: type, payload: payload))
 }
 
 func encodeJSON<T: Encodable>(_ value: T) throws -> String {
@@ -1374,7 +807,12 @@ func encodeJSON<T: Encodable>(_ value: T) throws -> String {
     return string
 }
 
-func encodeReplayToolResult(_ value: ToolResultForModel) throws -> String {
+func jsonObject<T: Encodable>(_ value: T) throws -> Any {
+    let data = try JSONEncoder().encode(value)
+    return try JSONSerialization.jsonObject(with: data, options: [])
+}
+
+func encodeReplayToolResult(_ value: ToolResult) throws -> String {
     let replayObject: [String: Any] = [
         "status_code": value.status_code,
         "text": value.text,
@@ -1400,20 +838,6 @@ func isoNow() -> String {
     return formatter.string(from: Date())
 }
 
-func makeResponseSchema() -> ResponseSchema {
-    ResponseSchema(
-        type: "object",
-        properties: [
-            "message": ResponseSchemaProperty(type: .multi(["string", "null"])),
-            "scratchpad": ResponseSchemaProperty(type: .multi(["string", "null"])),
-            "code": ResponseSchemaProperty(type: .multi(["string", "null"])),
-            "continue_turn": ResponseSchemaProperty(type: .single("boolean"))
-        ],
-        required: ["message", "scratchpad", "code", "continue_turn"],
-        additionalProperties: false
-    )
-}
-
 func resolveCodexSettings(workspaceConfig: ResolvedWorkspaceConfig) -> CodexSettings {
     let env = ProcessInfo.processInfo.environment
     let home = env["HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path
@@ -1434,39 +858,6 @@ func indentMultiline(_ text: String) -> String {
         .joined(separator: "\n")
 }
 
-func extractCacheStats(from responseObject: [String: Any]) -> CacheStats? {
-    guard let usage = responseObject["usage"] as? [String: Any] else {
-        return nil
-    }
-    let inputTokens = usage["input_tokens"] as? Int ?? 0
-    guard inputTokens > 0 else {
-        return nil
-    }
-    let details = usage["input_tokens_details"] as? [String: Any] ?? [:]
-    let cachedTokens = details["cached_tokens"] as? Int ?? 0
-    let percent = (Double(cachedTokens) / Double(inputTokens)) * 100.0
-    return CacheStats(inputTokens: inputTokens, cachedTokens: cachedTokens, percent: percent)
-}
-
-func formatPercent(_ value: Double) -> String {
-    String(format: "%.2f%%", value)
-}
-
-func sha256Hex(_ text: String) -> String {
-    sha256Hex(data: Data(text.utf8))
-}
-
-func sha256HexForEncodable<T: Encodable>(_ value: T) -> String {
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.sortedKeys]
-    let data = (try? encoder.encode(value)) ?? Data()
-    return sha256Hex(data: data)
-}
-
-func sha256Hex(data: Data) -> String {
-    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-}
-
 func compactText(_ text: String, limit: Int) -> String {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard trimmed.count > limit else { return trimmed }
@@ -1482,28 +873,6 @@ func serializeJSONObject(_ object: Any) -> String {
         return String(describing: object)
     }
     return text
-}
-
-func buildTurnReplayText(payload: [String: String]) throws -> String {
-    let message = payload["message"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let scratchpad = payload["scratchpad"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let code = payload["code"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let continueTurn = parseBoolString(payload["continue_turn"])
-    if (message ?? "").isEmpty && (scratchpad ?? "").isEmpty && (code ?? "").isEmpty && !continueTurn {
-        return ""
-    }
-    return try encodeJSON(
-        TurnOutput(
-            message: (message ?? "").isEmpty ? nil : message,
-            scratchpad: (scratchpad ?? "").isEmpty ? nil : scratchpad,
-            code: (code ?? "").isEmpty ? nil : code,
-            continue_turn: continueTurn
-        )
-    )
-}
-
-func parseBoolString(_ value: String?) -> Bool {
-    value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "true"
 }
 
 func buildPromptCacheKey(sessionID: String) -> String {
@@ -1530,72 +899,7 @@ func buildAssistantOutputMessageItem(text: String) -> ResponseInputItem {
     )
 }
 
-func validateTurnOutput(
-    _ turn: TurnOutput,
-    userMessage: String,
-    replayEventCount: Int,
-    lastReplayEventType: String?
-) throws -> TurnOutput {
-    let message = normalizeOptionalTurnField(turn.message)
-    let scratchpad = normalizeOptionalTurnField(turn.scratchpad)
-    let code = normalizeOptionalTurnField(turn.code)
-
-    if message == nil && scratchpad == nil && code == nil {
-        throw AppError.invalidModelResponse("Turn requires message, scratchpad, or code")
-    }
-    if code != nil && !turn.continue_turn {
-        throw AppError.invalidModelResponse("Turn with code must set continue_turn to true")
-    }
-    if !turn.continue_turn && code == nil && requiresMutationBeforeFinal(userMessage: userMessage, replayEventCount: replayEventCount) {
-        throw AppError.invalidModelResponse("This turn requires a tool call before a final response")
-    }
-    if turn.continue_turn && code == nil && lastReplayEventType == "tool_result" {
-        throw AppError.invalidModelResponse("Turn immediately after a tool result must either end the turn or issue another tool call")
-    }
-    return TurnOutput(
-        message: message,
-        scratchpad: scratchpad,
-        code: code,
-        continue_turn: turn.continue_turn
-    )
-}
-
-func normalizeOptionalTurnField(_ value: String?) -> String? {
-    guard let value else { return nil }
-    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-    return trimmed.isEmpty ? nil : trimmed
-}
-
-func requiresMutationBeforeFinal(userMessage: String, replayEventCount: Int) -> Bool {
-    guard replayEventCount <= 1 else {
-        return false
-    }
-    let trimmed = userMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-    if trimmed.isEmpty {
-        return false
-    }
-    let lowered = trimmed.lowercased()
-    if lowered.hasPrefix("http://") || lowered.hasPrefix("https://") {
-        return true
-    }
-    if lowered.hasPrefix("www.") {
-        return true
-    }
-    if lowered.contains("\n") {
-        return true
-    }
-    let ingestMarkers = ["attach", "ingest", "save this", "add this to the wiki", "put this in the wiki"]
-    if ingestMarkers.contains(where: { lowered.contains($0) }) {
-        return true
-    }
-    let pathExtensions = [".pdf", ".md", ".txt", ".html", ".docx"]
-    if pathExtensions.contains(where: { lowered.hasSuffix($0) }) {
-        return true
-    }
-    return false
-}
-
-func buildToolResultForModel(from output: LuaRunOutput, logPath: URL) throws -> ToolResultForModel {
+func buildToolResult(from output: ToolExecutionOutput, logPath: URL) throws -> ToolResult {
     let rawStdout = output.stdout
     let rawStderr = output.stderr
     var fullText = rawStdout
@@ -1625,7 +929,7 @@ func buildToolResultForModel(from output: LuaRunOutput, logPath: URL) throws -> 
         textForModel = textForModel + "\n[truncated \(omittedBytes) bytes; full output: \(artifactPath)]"
     }
 
-    return ToolResultForModel(
+    return ToolResult(
         status_code: output.status_code,
         text: textForModel,
         runtime_duration_ms: output.runtime_duration_ms,
@@ -1690,22 +994,243 @@ func buildSystemPrompt(promptTemplate: String, repoRoot: String, wikiRoot: Strin
     return trimmedTemplate + "\n\n" + statusBlock
 }
 
+func runInit(config: InitConfig) throws {
+    let fm = FileManager.default
+    let root = config.targetRoot
+    let repoConfigDir = config.configPath.deletingLastPathComponent()
+    let schemaPath = wikiSchemaPath(wikiRoot: root)
+
+    try fm.createDirectory(at: repoConfigDir, withIntermediateDirectories: true)
+    try renderWorkspaceConfig(repoRoot: config.repoRoot, wikiRoot: root).write(
+        to: config.configPath,
+        atomically: true,
+        encoding: .utf8
+    )
+    if !fm.fileExists(atPath: config.configExamplePath.path) {
+        try renderWorkspaceConfig(repoRoot: config.repoRoot, wikiRoot: nil).write(
+            to: config.configExamplePath,
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+    if !fm.fileExists(atPath: schemaPath.path) {
+        try initialSchemaTemplate().write(to: schemaPath, atomically: true, encoding: .utf8)
+    }
+    try fm.createDirectory(at: root.appendingPathComponent("tasks"), withIntermediateDirectories: true)
+
+    print("wiki workspace ready at \(root.path)")
+    print("config updated: \(config.configPath.path)")
+}
+
+func renderWorkspaceConfig(repoRoot: URL, wikiRoot: URL?) -> String {
+    let wikiRootPath = wikiRoot?.path ?? ""
+    return [
+        "# Wisp workspace configuration",
+        "paths:",
+        "  repo_root: \(quoteYAMLScalar(repoRoot.path))",
+        "  wiki_root: \(quoteYAMLScalar(wikiRootPath))",
+        "model:",
+        "  name: \"gpt-5.4\"",
+        "  reasoning_effort: \"medium\""
+    ].joined(separator: "\n") + "\n"
+}
+
+func quoteYAMLScalar(_ value: String) -> String {
+    "\"" + value
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"") + "\""
+}
+
+func initialSchemaTemplate() -> String {
+    [
+        "# Tag Guide",
+        "",
+        "Use section tags in headings, not file-level metadata.",
+        "Prefer short namespaced tags such as:",
+        "- #person/sean",
+        "- #project/wisp",
+        "- #topic/oauth",
+        "- #task/followup",
+        "",
+        "Suggested file prelude for every note and task:",
+        "# Title",
+        "created: YYYY-MM-DD",
+        "modified: YYYY-MM-DD",
+        "summary: one line summary",
+        "artifacts: none or [[path]], [[path]]",
+        "",
+        "Tasks may add:",
+        "status: open",
+        "due: none",
+        "time: none",
+        "place: none"
+    ].joined(separator: "\n") + "\n"
+}
+
 func formatStatusBlock(repoRoot: String, wikiRoot: String, now: Date) -> String {
-    var lines = ["Status:"]
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime]
-    lines.append("- current date: \(formatter.string(from: now))")
-    let trimmedRepoRoot = repoRoot.trimmingCharacters(in: .whitespacesAndNewlines)
     let trimmedWikiRoot = wikiRoot.trimmingCharacters(in: .whitespacesAndNewlines)
-    if !trimmedRepoRoot.isEmpty {
-        lines.append("- wisp repo root: \(trimmedRepoRoot)")
+    if trimmedWikiRoot.isEmpty {
+        return "Status:\n- date: \(formatter.string(from: now))"
     }
-    if !trimmedWikiRoot.isEmpty {
-        lines.append("- wiki root: \(trimmedWikiRoot)")
-        lines.append("- writable workspace: \(trimmedWikiRoot)")
-    }
+    return "Status:\n- date: \(formatter.string(from: now))\n- wiki: \(trimmedWikiRoot)"
+}
 
+func resolveWritableWikiPath(rawPath: String, wikiRoot: URL) throws -> URL {
+    let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+        throw AppError.io("path must be non-empty")
+    }
+    let resolved: URL
+    if trimmed.hasPrefix("/") {
+        resolved = URL(fileURLWithPath: trimmed).standardizedFileURL
+    } else {
+        resolved = wikiRoot.appendingPathComponent(trimmed).standardizedFileURL
+    }
+    guard isPathWithinRoot(resolved, root: wikiRoot) else {
+        throw AppError.io("refusing write outside wiki root: \(wikiRoot.path)")
+    }
+    return resolved
+}
+
+func relativeWikiPath(_ url: URL, wikiRoot: URL) -> String {
+    let rootPath = wikiRoot.standardizedFileURL.path
+    let path = url.standardizedFileURL.path
+    if path == rootPath {
+        return "."
+    }
+    if path.hasPrefix(rootPath + "/") {
+        return String(path.dropFirst(rootPath.count + 1))
+    }
+    return path
+}
+
+func wikiSchemaPath(wikiRoot: URL) -> URL {
+    wikiRoot.appendingPathComponent("schema.md").standardizedFileURL
+}
+
+func todayString() -> String {
+    let formatter = DateFormatter()
+    formatter.calendar = Calendar(identifier: .iso8601)
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.dateFormat = "yyyy-MM-dd"
+    return formatter.string(from: Date())
+}
+
+func normalizeSummaryLine(_ summary: String) -> String {
+    summary
+        .replacingOccurrences(of: "\n", with: " ")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+func renderArtifactsLine(_ artifacts: [String]) -> String {
+    let cleaned = artifacts
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    if cleaned.isEmpty { return "artifacts: none" }
+    return "artifacts: " + cleaned.joined(separator: ", ")
+}
+
+func slugifyFileStem(_ title: String) -> String {
+    let lowered = title.lowercased()
+    let pieces = lowered.split { !$0.isLetter && !$0.isNumber }
+    let slug = pieces.map(String.init).filter { !$0.isEmpty }.joined(separator: "-")
+    return slug.isEmpty ? "untitled" : slug
+}
+
+func renderNoteDocument(title: String, summary: String, artifacts: [String], content: String) -> String {
+    let normalizedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
+    let today = todayString()
+    var lines = [
+        "# \(title.trimmingCharacters(in: .whitespacesAndNewlines))",
+        "created: \(today)",
+        "modified: \(today)",
+        "summary: \(normalizeSummaryLine(summary))",
+        renderArtifactsLine(artifacts),
+        ""
+    ]
+    if !normalizedContent.isEmpty {
+        lines.append(normalizedContent)
+        lines.append("")
+    }
     return lines.joined(separator: "\n")
+}
+
+func renderTaskDocument(title: String, summary: String, artifacts: [String], content: String, due: String?, time: String?, place: String?, status: String?) -> String {
+    let normalizedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
+    let today = todayString()
+    var lines = [
+        "# \(title.trimmingCharacters(in: .whitespacesAndNewlines))",
+        "created: \(today)",
+        "modified: \(today)",
+        "summary: \(normalizeSummaryLine(summary))",
+        renderArtifactsLine(artifacts),
+        "status: \((status?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? status!.trimmingCharacters(in: .whitespacesAndNewlines) : "open"))",
+        "due: \((due?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? due!.trimmingCharacters(in: .whitespacesAndNewlines) : "none"))",
+        "time: \((time?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? time!.trimmingCharacters(in: .whitespacesAndNewlines) : "none"))",
+        "place: \((place?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? place!.trimmingCharacters(in: .whitespacesAndNewlines) : "none"))",
+        ""
+    ]
+    if !normalizedContent.isEmpty {
+        lines.append(normalizedContent)
+        lines.append("")
+    }
+    return lines.joined(separator: "\n")
+}
+
+func createNoteFile(title: String, summary: String, content: String, artifacts: [String], explicitPath: String?, config: CLIConfig) throws -> String {
+    let target = try resolveNewEntryPath(
+        explicitPath: explicitPath,
+        defaultRelativePath: slugifyFileStem(title) + ".md",
+        wikiRoot: config.wikiRoot
+    )
+    let document = renderNoteDocument(title: title, summary: summary, artifacts: artifacts, content: content)
+    try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try document.write(to: target, atomically: true, encoding: .utf8)
+    return relativeWikiPath(target, wikiRoot: config.wikiRoot)
+}
+
+func createTaskFile(title: String, summary: String, content: String, artifacts: [String], due: String?, time: String?, place: String?, status: String?, explicitPath: String?, config: CLIConfig) throws -> String {
+    let target = try resolveNewEntryPath(
+        explicitPath: explicitPath,
+        defaultRelativePath: "tasks/" + slugifyFileStem(title) + ".md",
+        wikiRoot: config.wikiRoot
+    )
+    let document = renderTaskDocument(
+        title: title,
+        summary: summary,
+        artifacts: artifacts,
+        content: content,
+        due: due,
+        time: time,
+        place: place,
+        status: status
+    )
+    try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try document.write(to: target, atomically: true, encoding: .utf8)
+    return relativeWikiPath(target, wikiRoot: config.wikiRoot)
+}
+
+func resolveNewEntryPath(explicitPath: String?, defaultRelativePath: String, wikiRoot: URL) throws -> URL {
+    let target = try resolveWritableWikiPath(rawPath: explicitPath ?? defaultRelativePath, wikiRoot: wikiRoot)
+    if FileManager.default.fileExists(atPath: target.path) {
+        throw AppError.io("refusing to overwrite existing file at \(relativeWikiPath(target, wikiRoot: wikiRoot))")
+    }
+    return target
+}
+
+func touchModifiedLineIfPresent(_ content: String) -> String {
+    let lines = content.components(separatedBy: .newlines)
+    guard !lines.isEmpty else { return content }
+    var updated = lines
+    let maxIndex = min(updated.count, 12)
+    for index in 0..<maxIndex where updated[index].hasPrefix("modified:") {
+        updated[index] = "modified: \(todayString())"
+        return updated.joined(separator: "\n")
+    }
+    return content
 }
 
 struct ResolvedWorkspaceConfig {
@@ -1904,7 +1429,7 @@ func loadRequiredTextFile(_ url: URL, name: String) throws -> String {
 }
 
 func logEvent(type: String, payload: [String: String], config: CLIConfig) throws {
-    try appendLog(type: type, payload: payload, logPath: config.logPath)
+    try appendLog(type: type, payload: payload, writer: config.logWriter)
     guard config.verbose else { return }
     let lines = formatVerboseLines(type: type, payload: payload)
     for line in lines {
@@ -1922,18 +1447,10 @@ func formatVerboseLines(type: String, payload: [String: String]) -> [String] {
         }
         return ["[verbose] step: \(name) \(state)"]
     case "model_call":
-        var lines: [String] = []
-        if let key = payload["prompt_cache_key"], !key.isEmpty {
-            lines.append("[verbose] prompt_cache_key: \(key)")
-        }
-        if let percent = payload["cache_percent"],
-           let cached = payload["cache_cached_tokens"],
-           let input = payload["cache_input_tokens"] {
-            lines.append("[verbose] model_cache: \(percent) (\(cached)/\(input) cached/input tokens)")
-            return lines
-        }
-        lines.append("[verbose] model_cache: unavailable")
-        return lines
+        let duration = payload["duration_ms"] ?? "?"
+        let toolCalls = payload["tool_calls"] ?? "0"
+        let messages = payload["assistant_messages"] ?? "0"
+        return ["[verbose] model_call: duration_ms=\(duration), tool_calls=\(toolCalls), assistant_messages=\(messages)"]
     case "model_response":
         let continueTurn = payload["continue_turn"] ?? "false"
         let message = payload["message"] ?? ""
@@ -1947,8 +1464,8 @@ func formatVerboseLines(type: String, payload: [String: String]) -> [String] {
         ]
     case "tool_call":
         return [
-            "[verbose] tool_call.lua_code:",
-            indentMultiline(payload["code"] ?? "")
+            "[verbose] tool_call: \(payload["name"] ?? "unknown")",
+            indentMultiline(payload["arguments"] ?? "")
         ]
     case "tool_result":
         let status = payload["status_code"] ?? "?"

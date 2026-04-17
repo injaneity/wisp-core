@@ -1,0 +1,37 @@
+{
+  "id": "case_001_note_create",
+  "name": "pure knowledge capture creates note",
+  "goal": "Durable factual information should create a note about the information itself, not a broad container note or a task.",
+  "tags": ["note_create", "knowledge"],
+  "reference_time": "2026-04-17T10:00:00Z",
+  "input": {
+    "capture": "Acme's migration target is Q3, but budget approval is still pending."
+  },
+  "initial_workspace": {
+    "files": []
+  },
+  "expect": {
+    "tool_calls": {
+      "must_include": ["note"],
+      "must_not_include": ["task"]
+    },
+    "counts": {
+      "notes": 1,
+      "tasks": 0
+    },
+    "files": [
+      {
+        "kind": "note",
+        "path_contains": ["acme", "migration"],
+        "title_contains": ["acme", "migration"],
+        "summary_contains": ["q3", "budget approval"],
+        "body_contains": ["Q3", "budget approval"],
+        "must_be_new": true,
+        "must_not_duplicate": true
+      }
+    ],
+    "reply": {
+      "must_contain": ["created", "acme"]
+    }
+  }
+}

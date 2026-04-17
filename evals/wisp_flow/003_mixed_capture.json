@@ -1,0 +1,42 @@
+{
+  "id": "case_003_mixed_capture",
+  "name": "mixed capture answers and creates task",
+  "goal": "A mixed capture should answer from an existing note and create a new task.",
+  "tags": ["mixed", "query", "task_create"],
+  "reference_time": "2026-04-17T10:10:00Z",
+  "input": {
+    "capture": "What did we decide about auth? Also remind me to check with Sean tomorrow."
+  },
+  "initial_workspace": {
+    "files": [
+      {
+        "path": "auth/oauth-notes.md",
+        "content": "# OAuth notes\ncreated: 2026-04-10\nmodified: 2026-04-10\nsummary: Codex OAuth was not the source of loop latency.\nartifacts: none\n\n## Conclusion #topic/oauth #topic/latency\nThe remaining latency came from local orchestration, not OAuth.\n"
+      }
+    ]
+  },
+  "expect": {
+    "tool_calls": {
+      "must_include": ["read", "task"],
+      "must_not_include": []
+    },
+    "counts": {
+      "notes": 1,
+      "tasks": 1
+    },
+    "files": [
+      {
+        "kind": "task",
+        "path_contains": ["tasks", "sean"],
+        "title_contains": ["sean"],
+        "status": "open",
+        "due": "relative:tomorrow",
+        "must_be_new": true,
+        "must_not_duplicate": true
+      }
+    ],
+    "reply": {
+      "must_contain": ["oauth", "not", "latency", "sean"]
+    }
+  }
+}

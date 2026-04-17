@@ -1,3 +1,18 @@
 .build/
+.swiftpm/
 .wisp/*
 !.wisp/config.yaml.example
+
+# Python / eval caches
+__pycache__/
+*.pyc
+evals/__pycache__/
+evals/**/*.pyc
+
+# Local eval outputs
+*.submission.json
+evals/runs/
+evals/tmp/
+
+# macOS / editor noise
+.DS_Store

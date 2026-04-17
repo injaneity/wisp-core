@@ -1,0 +1,41 @@
+{
+  "id": "case_005_merge_existing_note",
+  "name": "new fact merges into existing note",
+  "goal": "A related factual update should edit an existing note instead of creating a duplicate.",
+  "tags": ["note_merge", "deduplication"],
+  "reference_time": "2026-04-17T10:20:00Z",
+  "input": {
+    "capture": "Acme budget approval is still pending."
+  },
+  "initial_workspace": {
+    "files": [
+      {
+        "path": "companies/acme/migration.md",
+        "content": "# Acme migration\ncreated: 2026-04-10\nmodified: 2026-04-10\nsummary: Acme is planning an infrastructure migration.\nartifacts: none\n\n## Facts #company/acme #project/migration\n- Infrastructure migration is underway.\n"
+      }
+    ]
+  },
+  "expect": {
+    "tool_calls": {
+      "must_include": ["read", "edit"],
+      "must_not_include": ["note", "task"]
+    },
+    "counts": {
+      "notes": 1,
+      "tasks": 0
+    },
+    "files": [
+      {
+        "kind": "note",
+        "exact_path": "companies/acme/migration.md",
+        "title_contains": ["acme", "migration"],
+        "body_contains": ["budget approval", "pending"],
+        "must_be_updated_existing": true,
+        "must_not_duplicate": true
+      }
+    ],
+    "reply": {
+      "must_contain": ["updated", "companies/acme/migration.md"]
+    }
+  }
+}

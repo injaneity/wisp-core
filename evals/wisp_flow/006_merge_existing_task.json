@@ -1,0 +1,41 @@
+{
+  "id": "case_006_merge_existing_task",
+  "name": "new reminder merges into existing task",
+  "goal": "A task follow-up should edit an existing task instead of creating a duplicate, while preserving the task's identity.",
+  "tags": ["task_merge", "deduplication"],
+  "reference_time": "2026-04-17T10:25:00Z",
+  "input": {
+    "capture": "Email Jane next Tuesday about infra migration."
+  },
+  "initial_workspace": {
+    "files": [
+      {
+        "path": "tasks/follow-up-with-jane-about-acme-migration.md",
+        "content": "# Follow up with Jane about Acme migration\ncreated: 2026-04-10\nmodified: 2026-04-10\nsummary: Follow up with Jane on the Acme migration.\nartifacts: none\nstatus: open\ndue: none\ntime: none\nplace: none\n\n## Context #person/jane #project/migration\nNeed to check in on the Acme migration.\n"
+      }
+    ]
+  },
+  "expect": {
+    "tool_calls": {
+      "must_include": ["read", "edit"],
+      "must_not_include": ["task", "note"]
+    },
+    "counts": {
+      "notes": 0,
+      "tasks": 1
+    },
+    "files": [
+      {
+        "kind": "task",
+        "exact_path": "tasks/follow-up-with-jane-about-acme-migration.md",
+        "status": "open",
+        "due": "relative:next_tuesday",
+        "must_be_updated_existing": true,
+        "must_not_duplicate": true
+      }
+    ],
+    "reply": {
+      "must_contain": ["updated", "task"]
+    }
+  }
+}

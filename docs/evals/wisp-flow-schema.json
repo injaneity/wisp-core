@@ -1,0 +1,444 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wisp.local/schemas/wisp-flow-eval-case.json",
+  "title": "Wisp Flow Eval Case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "goal", "suite", "initial_state", "events", "gold"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9_\\-]+$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1
+    },
+    "suite": {
+      "type": "string",
+      "enum": [
+        "inbox_routing",
+        "structure_building",
+        "metadata_extraction",
+        "background_cleanup",
+        "task_thread_interaction"
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "notes": {
+      "type": "string"
+    },
+    "initial_state": {
+      "$ref": "#/$defs/initialState"
+    },
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/event"
+      }
+    },
+    "gold": {
+      "$ref": "#/$defs/gold"
+    }
+  },
+  "$defs": {
+    "initialState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scratchpad", "wiki", "tasks"],
+      "properties": {
+        "scratchpad": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/scratchpadItem"
+          }
+        },
+        "wiki": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/wikiNote"
+          }
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/task"
+          }
+        },
+        "task_threads": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/taskThread"
+          }
+        }
+      }
+    },
+    "scratchpadItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "text"],
+      "properties": {
+        "id": { "type": "string" },
+        "text": { "type": "string" },
+        "created_at": { "type": ["string", "null"], "format": "date-time" },
+        "status": {
+          "type": "string",
+          "enum": ["active", "archived", "linked"]
+        },
+        "source_type": {
+          "type": ["string", "null"],
+          "enum": ["manual", "paste", "imported", null]
+        },
+        "linked_note_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "linked_task_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "wikiNote": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "path", "summary", "body", "source_ids"],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "path": { "type": "string" },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "summary": { "type": "string" },
+        "body": { "type": "string" },
+        "source_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "status", "source_ids", "related_note_ids"],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["open", "in_progress", "blocked", "done"]
+        },
+        "due_date": {
+          "type": ["string", "null"],
+          "description": "Use ISO date or a relative marker such as relative:next_tuesday in gold expectations."
+        },
+        "due_time": {
+          "type": ["string", "null"]
+        },
+        "place": {
+          "type": ["string", "null"]
+        },
+        "source_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "related_note_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "thread_id": {
+          "type": ["string", "null"]
+        },
+        "last_activity_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        }
+      }
+    },
+    "taskThread": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "task_id", "messages"],
+      "properties": {
+        "id": { "type": "string" },
+        "task_id": { "type": "string" },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/taskThreadMessage"
+          }
+        }
+      }
+    },
+    "taskThreadMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "text"],
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": ["user", "assistant", "system"]
+        },
+        "text": { "type": "string" },
+        "citations_note_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "created_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        }
+      }
+    },
+    "event": {
+      "oneOf": [
+        { "$ref": "#/$defs/scratchpadAddEvent" },
+        { "$ref": "#/$defs/cleanupTickEvent" },
+        { "$ref": "#/$defs/threadQueryEvent" },
+        { "$ref": "#/$defs/threadUserUpdateEvent" }
+      ]
+    },
+    "scratchpadAddEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "item_id", "text"],
+      "properties": {
+        "type": { "const": "scratchpad_add" },
+        "item_id": { "type": "string" },
+        "text": { "type": "string" },
+        "created_at": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "cleanupTickEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "cleanup_tick" },
+        "tick_id": { "type": "string" }
+      }
+    },
+    "threadQueryEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "event_id", "task_id", "text"],
+      "properties": {
+        "type": { "const": "thread_query" },
+        "event_id": { "type": "string" },
+        "task_id": { "type": "string" },
+        "text": { "type": "string" }
+      }
+    },
+    "threadUserUpdateEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "event_id", "task_id", "text"],
+      "properties": {
+        "type": { "const": "thread_user_update" },
+        "event_id": { "type": "string" },
+        "task_id": { "type": "string" },
+        "text": { "type": "string" }
+      }
+    },
+    "gold": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "routing": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["scratchpad", "wiki", "task"]
+            },
+            "uniqueItems": true
+          }
+        },
+        "scratchpad_expectations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/scratchpadExpectation"
+          }
+        },
+        "wiki_expectations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/wikiExpectation"
+          }
+        },
+        "task_expectations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/taskExpectation"
+          }
+        },
+        "thread_expectations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/threadExpectation"
+          }
+        },
+        "thread_update_expectations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/threadUpdateExpectation"
+          }
+        },
+        "cleanup_expectations": {
+          "$ref": "#/$defs/cleanupExpectation"
+        },
+        "hard_fail_conditions": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "scratchpadExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "item_id": { "type": "string" },
+        "must_remain_present": { "type": "boolean" },
+        "allowed_status": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["active", "archived", "linked"]
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "wikiExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "match_existing_id": { "type": ["string", "null"] },
+        "title_contains": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "path": { "type": ["string", "null"] },
+        "must_contain_facts": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "must_link_source_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "must_not_duplicate_existing": { "type": "boolean" }
+      }
+    },
+    "taskExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "match_existing_id": { "type": ["string", "null"] },
+        "title_contains": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "status": {
+          "type": ["string", "null"],
+          "enum": ["open", "in_progress", "blocked", "done", null]
+        },
+        "due_date": {
+          "type": ["string", "null"]
+        },
+        "due_time": {
+          "type": ["string", "null"]
+        },
+        "place": {
+          "type": ["string", "null"]
+        },
+        "must_link_source_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "must_link_note_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "must_not_duplicate_existing": { "type": "boolean" }
+      }
+    },
+    "threadExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["query_event_id"],
+      "properties": {
+        "query_event_id": { "type": "string" },
+        "answer_must_contain": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "answer_must_not_contain": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "citations_must_include_note_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "must_use_related_wiki_context": { "type": "boolean" },
+        "must_not_introduce_unsupported_facts": { "type": "boolean" },
+        "must_stay_scoped_to_task": { "type": "boolean" }
+      }
+    },
+    "threadUpdateExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "task_id"],
+      "properties": {
+        "event_id": { "type": "string" },
+        "task_id": { "type": "string" },
+        "status": {
+          "type": ["string", "null"],
+          "enum": ["open", "in_progress", "blocked", "done", null]
+        },
+        "due_date": { "type": ["string", "null"] },
+        "due_time": { "type": ["string", "null"] },
+        "place": { "type": ["string", "null"] },
+        "must_set_last_activity": { "type": "boolean" },
+        "must_not_create_new_task": { "type": "boolean" }
+      }
+    },
+    "cleanupExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "should_reduce_scratchpad_clutter": { "type": "boolean" },
+        "should_be_idempotent_after_first_pass": { "type": "boolean" },
+        "must_not_create_duplicates": { "type": "boolean" }
+      }
+    }
+  }
+}

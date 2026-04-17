@@ -1,0 +1,38 @@
+{
+  "id": "case_002_task_create",
+  "name": "pure todo creates task",
+  "goal": "A simple action item should become a task, not a note.",
+  "tags": ["task_create", "todo"],
+  "reference_time": "2026-04-17T10:05:00Z",
+  "input": {
+    "capture": "Pick up dry cleaning tomorrow."
+  },
+  "initial_workspace": {
+    "files": []
+  },
+  "expect": {
+    "tool_calls": {
+      "must_include": ["task"],
+      "must_not_include": ["note"]
+    },
+    "counts": {
+      "notes": 0,
+      "tasks": 1
+    },
+    "files": [
+      {
+        "kind": "task",
+        "path_contains": ["tasks", "dry"],
+        "title_contains": ["dry", "cleaning"],
+        "summary_contains": ["dry cleaning"],
+        "status": "open",
+        "due": "relative:tomorrow",
+        "must_be_new": true,
+        "must_not_duplicate": true
+      }
+    ],
+    "reply": {
+      "must_contain": ["created", "task"]
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "id": "case_004_query_only",
+  "name": "query only reads without writing",
+  "goal": "A simple question should be answered from the workspace without creating new files.",
+  "tags": ["query_only"],
+  "reference_time": "2026-04-17T10:15:00Z",
+  "input": {
+    "capture": "What do we know about Acme migration timing?"
+  },
+  "initial_workspace": {
+    "files": [
+      {
+        "path": "companies/acme/migration.md",
+        "content": "# Acme migration\ncreated: 2026-04-10\nmodified: 2026-04-11\nsummary: Acme is targeting Q3 and budget approval is still pending.\nartifacts: none\n\n## Facts #company/acme #project/migration\n- Migration target is Q3.\n- Budget approval is still pending.\n"
+      }
+    ]
+  },
+  "expect": {
+    "tool_calls": {
+      "must_include": ["read"],
+      "must_not_include": ["note", "task"]
+    },
+    "counts": {
+      "notes": 1,
+      "tasks": 0
+    },
+    "reply": {
+      "must_contain": ["q3", "budget approval"]
+    }
+  }
+}

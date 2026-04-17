@@ -1,0 +1,20 @@
+{
+  "results": [
+    {
+      "case_id": "case_001_note_create",
+      "tool_calls": [
+        { "name": "bash" },
+        { "name": "note" }
+      ],
+      "final_reply": "Created acme-migration.md with the migration summary.",
+      "workspace": {
+        "files": [
+          {
+            "path": "acme-migration.md",
+            "content": "# Acme migration\ncreated: 2026-04-17\nmodified: 2026-04-17\nsummary: Acme's migration target is Q3 and budget approval is still pending.\nartifacts: none\n\n## Facts #company/acme #project/migration\n- Migration target is Q3.\n- Budget approval is still pending.\n"
+          }
+        ]
+      }
+    }
+  ]
+}
