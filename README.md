@@ -25,6 +25,7 @@ project under the repository license through signed-off commits (`git commit
 
 - `WispCore`: iOS/macOS-compatible library with app-facing models,
   markdown rendering, and model backend configuration.
+- `WispUI`: SwiftUI components for app-facing backend connection status.
 - `wisp`: macOS CLI executable that keeps the existing terminal workflow and
   filesystem/tool execution behavior.
 
@@ -42,6 +43,9 @@ Supported provider values are `codex`, `ollama`, `lmstudio`, `llamacpp`, and
 `openai_compatible`. For authenticated OpenAI-compatible servers, set
 `api_key_env` to the name of an environment variable containing the bearer
 token.
+
+For physical iPhone local inference, see
+[`docs/local-inference-iphone.md`](docs/local-inference-iphone.md).
 
 ## Development
 

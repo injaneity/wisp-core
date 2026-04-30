@@ -244,10 +244,8 @@ func buildModelRequestHeaders(for backend: WispModelBackend, sessionID: String) 
         "User-Agent": "wisp",
         "x-client-request-id": sessionID
     ]
-    if let envName = backend.apiKeyEnvironmentVariable,
-       let apiKey = ProcessInfo.processInfo.environment[envName]?.trimmingCharacters(in: .whitespacesAndNewlines),
-       !apiKey.isEmpty {
-        headers["Authorization"] = "Bearer \(apiKey)"
+    if let authorizationHeader = backend.authorizationHeader() {
+        headers["Authorization"] = authorizationHeader
     }
     return headers
 }

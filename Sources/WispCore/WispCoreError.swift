@@ -4,6 +4,7 @@ public enum WispCoreError: Error, CustomStringConvertible, Equatable {
     case invalidBaseURL(String)
     case invalidPath(String)
     case emptyText(String)
+    case unsupportedBackend(String)
 
     public var description: String {
         switch self {
@@ -13,6 +14,8 @@ public enum WispCoreError: Error, CustomStringConvertible, Equatable {
             "Invalid path: \(value)"
         case .emptyText(let field):
             "\(field) must be non-empty"
+        case .unsupportedBackend(let message):
+            message
         }
     }
 }

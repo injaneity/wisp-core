@@ -37,11 +37,12 @@ public enum WispModelProvider: String, Codable, Sendable, Equatable {
     }
 }
 
-public struct WispModelBackend: Sendable, Equatable {
+public struct WispModelBackend: Codable, Sendable, Equatable {
     public var provider: WispModelProvider
     public var baseURL: String
     public var model: String
     public var reasoningEffort: String?
+    public var authentication: WispBackendAuthentication
     public var authFile: URL?
     public var apiKeyEnvironmentVariable: String?
 
@@ -50,6 +51,7 @@ public struct WispModelBackend: Sendable, Equatable {
         baseURL: String? = nil,
         model: String,
         reasoningEffort: String? = nil,
+        authentication: WispBackendAuthentication = .none,
         authFile: URL? = nil,
         apiKeyEnvironmentVariable: String? = nil
     ) {
@@ -57,6 +59,7 @@ public struct WispModelBackend: Sendable, Equatable {
         self.baseURL = baseURL ?? Self.defaultBaseURL(for: provider)
         self.model = model
         self.reasoningEffort = reasoningEffort
+        self.authentication = authentication
         self.authFile = authFile
         self.apiKeyEnvironmentVariable = apiKeyEnvironmentVariable
     }
@@ -105,6 +108,27 @@ public struct WispModelBackend: Sendable, Equatable {
         }
     }
 
+    public func modelsURL() throws -> URL {
+        switch provider {
+        case .codex:
+            throw WispCoreError.unsupportedBackend("Codex backend does not expose a generic OpenAI-compatible models health endpoint.")
+        case .openAICompatible, .ollama, .lmStudio, .llamaCPP:
+            try Self.resolveOpenAICompatibleModelsURL(baseURL: baseURL)
+        }
+    }
+
+    public func authorizationHeader(environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
+        if let header = authentication.authorizationHeader {
+            return header
+        }
+        guard let envName = apiKeyEnvironmentVariable,
+              let apiKey = environment[envName]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !apiKey.isEmpty else {
+            return nil
+        }
+        return "Bearer \(apiKey)"
+    }
+
     private static func resolveCodexResponsesURL(baseURL: String) throws -> URL {
         let normalized = normalizedBaseURL(baseURL)
         let urlString: String
@@ -130,9 +154,45 @@ public struct WispModelBackend: Sendable, Equatable {
         return url
     }
 
+    private static func resolveOpenAICompatibleModelsURL(baseURL: String) throws -> URL {
+        let normalized = normalizedBaseURL(baseURL)
+        let versionRoot = normalized
+            .replacingOccurrences(of: "/responses$", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "/chat/completions$", with: "", options: .regularExpression)
+        guard let url = URL(string: versionRoot + "/models") else {
+            throw WispCoreError.invalidBaseURL(baseURL)
+        }
+        return url
+    }
+
     private static func normalizedBaseURL(_ value: String) -> String {
         value
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
+    }
+}
+
+public struct WispBackendAuthentication: Codable, Sendable, Equatable {
+    public enum Kind: String, Codable, Sendable {
+        case none
+        case bearerToken = "bearer_token"
+    }
+
+    public var kind: Kind
+    public var token: String?
+
+    public static let none = WispBackendAuthentication(kind: .none, token: nil)
+
+    public static func bearerToken(_ token: String) -> WispBackendAuthentication {
+        WispBackendAuthentication(kind: .bearerToken, token: token)
+    }
+
+    public var authorizationHeader: String? {
+        switch kind {
+        case .none:
+            nil
+        case .bearerToken:
+            token.map { "Bearer \($0)" }
+        }
     }
 }

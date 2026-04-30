@@ -49,6 +49,9 @@ For iOS Simulator, `localhost` points at the Mac running the simulator. For a
 physical iPhone, use the Mac/server LAN address and account for local-network
 permission prompts.
 
+For the polished physical-device flow, use Bonjour discovery and a trusted LAN
+proxy. See `docs/local-inference-iphone.md`.
+
 ## Next App Layer
 
 The next implementation layer should add a SwiftUI app target or Xcode project

@@ -9,12 +9,18 @@ let package = Package(
     ],
     products: [
         .library(name: "WispCore", targets: ["WispCore"]),
+        .library(name: "WispUI", targets: ["WispUI"]),
         .executable(name: "wisp", targets: ["WispCLI"])
     ],
     targets: [
         .target(
             name: "WispCore",
             path: "Sources/WispCore"
+        ),
+        .target(
+            name: "WispUI",
+            dependencies: ["WispCore"],
+            path: "Sources/WispUI"
         ),
         .executableTarget(
             name: "WispCLI",
