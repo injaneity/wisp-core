@@ -1,6 +1,6 @@
 # iOS Xcode Testing
 
-The repo now includes a minimal iOS host app at `Apps/iOS/WispLocalDemo`.
+The repo now includes the iOS app at `Apps/iOS/WispLocal`.
 It exists to exercise the portable `WispCore` and `WispUI` modules in a real
 iOS app target with the required local-network and Bonjour plist entries.
 
@@ -10,7 +10,7 @@ iOS app target with the required local-network and Bonjour plist entries.
 xcodegen generate --spec Apps/iOS/project.yml --project Apps/iOS
 ```
 
-Open `Apps/iOS/WispLocalDemo.xcodeproj` and select the `WispLocalDemo` scheme.
+Open `Apps/iOS/WispLocal.xcodeproj` and select the `WispLocal` scheme.
 
 ## Simulator
 
@@ -28,8 +28,8 @@ Then build:
 
 ```sh
 xcodebuild \
-  -project Apps/iOS/WispLocalDemo.xcodeproj \
-  -scheme WispLocalDemo \
+  -project Apps/iOS/WispLocal.xcodeproj \
+  -scheme WispLocal \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
   build
 ```
@@ -39,11 +39,11 @@ xcodebuild \
 1. Connect the phone by USB.
 2. Unlock it and trust the Mac.
 3. Enable Developer Mode on the phone if Xcode asks for it.
-4. In Xcode, set a signing team for the `WispLocalDemo` target.
+4. In Xcode, set a signing team for the `WispLocal` target.
 5. If the bundle identifier is already taken for the team, change
    `PRODUCT_BUNDLE_IDENTIFIER` in `Apps/iOS/project.yml`, regenerate, and build.
 
-The current bundle identifier is `dev.wisp.localdemo`.
+The current bundle identifier is `dev.wisp.local`.
 
 ## Inference Flows
 

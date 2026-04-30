@@ -15,10 +15,10 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "D964CD018904B8300CD9100D"
-               BuildableName = "WispLocalDemo.app"
-               BlueprintName = "WispLocalDemo"
-               ReferencedContainer = "container:WispLocalDemo.xcodeproj">
+               BlueprintIdentifier = "1C6AFE379902025E9BC037CD"
+               BuildableName = "WispLocal.app"
+               BlueprintName = "WispLocal"
+               ReferencedContainer = "container:WispLocal.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -32,10 +32,10 @@
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "D964CD018904B8300CD9100D"
-            BuildableName = "WispLocalDemo.app"
-            BlueprintName = "WispLocalDemo"
-            ReferencedContainer = "container:WispLocalDemo.xcodeproj">
+            BlueprintIdentifier = "1C6AFE379902025E9BC037CD"
+            BuildableName = "WispLocal.app"
+            BlueprintName = "WispLocal"
+            ReferencedContainer = "container:WispLocal.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
       <Testables>
@@ -55,10 +55,10 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "D964CD018904B8300CD9100D"
-            BuildableName = "WispLocalDemo.app"
-            BlueprintName = "WispLocalDemo"
-            ReferencedContainer = "container:WispLocalDemo.xcodeproj">
+            BlueprintIdentifier = "1C6AFE379902025E9BC037CD"
+            BuildableName = "WispLocal.app"
+            BlueprintName = "WispLocal"
+            ReferencedContainer = "container:WispLocal.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
       <CommandLineArguments>
@@ -74,10 +74,10 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "D964CD018904B8300CD9100D"
-            BuildableName = "WispLocalDemo.app"
-            BlueprintName = "WispLocalDemo"
-            ReferencedContainer = "container:WispLocalDemo.xcodeproj">
+            BlueprintIdentifier = "1C6AFE379902025E9BC037CD"
+            BuildableName = "WispLocal.app"
+            BlueprintName = "WispLocal"
+            ReferencedContainer = "container:WispLocal.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

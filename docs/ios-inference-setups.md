@@ -1,6 +1,6 @@
 # iOS Inference Setups
 
-The iOS demo app presents three setup modes before opening the chat screen.
+The iOS app presents three setup modes before opening the chat screen.
 
 ## API key
 

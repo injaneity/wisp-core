@@ -1,4 +1,4 @@
-name: WispLocalDemo
+name: WispLocal
 options:
   bundleIdPrefix: dev.wisp
   deploymentTarget:
@@ -14,11 +14,11 @@ packages:
   wisp:
     path: ../..
 targets:
-  WispLocalDemo:
+  WispLocal:
     type: application
     platform: iOS
     sources:
-      - path: WispLocalDemo
+      - path: WispLocal
         excludes:
           - Info.plist
     dependencies:
@@ -29,7 +29,7 @@ targets:
       - package: wisp
         product: WispUI
     info:
-      path: WispLocalDemo/Info.plist
+      path: WispLocal/Info.plist
       properties:
         CFBundleDisplayName: Wisp Local
         CFBundleShortVersionString: $(MARKETING_VERSION)
@@ -43,14 +43,14 @@ targets:
           NSAllowsLocalNetworking: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.wisp.localdemo
+        PRODUCT_BUNDLE_IDENTIFIER: dev.wisp.local
         PRODUCT_NAME: Wisp Local
-        PRODUCT_MODULE_NAME: WispLocalDemo
+        PRODUCT_MODULE_NAME: WispLocal
         CODE_SIGN_STYLE: Automatic
 schemes:
-  WispLocalDemo:
+  WispLocal:
     build:
       targets:
-        WispLocalDemo: all
+        WispLocal: all
     run:
       config: Debug

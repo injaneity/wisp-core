@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct WispLocalDemoApp: App {
+struct WispLocalApp: App {
     var body: some Scene {
         WindowGroup {
             ConnectionDashboardView()
