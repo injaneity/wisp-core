@@ -28,7 +28,14 @@ memory second, and task threads as the main work surface.
 
 ## Backend Providers
 
-`WispModelBackend` supports:
+The iOS app now has three user-facing setup modes:
+
+- API key, backed by the OpenAI API and defaulting to `gpt-5.4`.
+- llama.cpp, backed by `WispLlama` and an imported on-device GGUF model.
+- Tailscale Mac, backed by an OpenAI-compatible `/v1` endpoint running on a
+  self-hosted Mac over the user's tailnet.
+
+`WispModelBackend` still supports lower-level remote provider values:
 
 - `codex`
 - `openai_compatible`
@@ -36,7 +43,7 @@ memory second, and task threads as the main work surface.
 - `lmstudio`
 - `llamacpp`
 
-For local Gemma-style inference, use Ollama:
+For Mac-hosted Gemma-style inference, use Ollama:
 
 ```yaml
 model:
@@ -46,11 +53,10 @@ model:
 ```
 
 For iOS Simulator, `localhost` points at the Mac running the simulator. For a
-physical iPhone, use the Mac/server LAN address and account for local-network
-permission prompts.
+physical iPhone, use Tailscale, the Mac/server LAN address, or true on-device
+llama.cpp inference.
 
-For the polished physical-device flow, use Bonjour discovery and a trusted LAN
-proxy. See `docs/local-inference-iphone.md`.
+See `docs/ios-inference-setups.md` for the current app setup modes.
 
 ## Next App Layer
 

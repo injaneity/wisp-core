@@ -3,6 +3,7 @@ import Foundation
 public enum WispCoreError: Error, CustomStringConvertible, Equatable {
     case invalidBaseURL(String)
     case invalidPath(String)
+    case invalidModelFile(String)
     case emptyText(String)
     case unsupportedBackend(String)
 
@@ -12,6 +13,8 @@ public enum WispCoreError: Error, CustomStringConvertible, Equatable {
             "Invalid base URL: \(value)"
         case .invalidPath(let value):
             "Invalid path: \(value)"
+        case .invalidModelFile(let message):
+            message
         case .emptyText(let field):
             "\(field) must be non-empty"
         case .unsupportedBackend(let message):

@@ -39,16 +39,18 @@ public struct WispResponsesClient: @unchecked Sendable {
             throw WispCoreError.emptyText("prompt")
         }
 
+        do {
+            return try await performResponsesRequest(prompt: trimmedPrompt, using: backend)
+        } catch let error as WispResponsesClientError where shouldFallbackToChatCompletions(after: error) {
+            return try await performChatCompletionsRequest(prompt: trimmedPrompt, using: backend)
+        }
+    }
+
+    private func performResponsesRequest(prompt: String, using backend: WispModelBackend) async throws -> WispModelResponse {
         var request = URLRequest(url: try backend.responsesURL())
         request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("wisp", forHTTPHeaderField: "User-Agent")
-        if let authorizationHeader = backend.authorizationHeader() {
-            request.setValue(authorizationHeader, forHTTPHeaderField: "Authorization")
-        }
-
-        request.httpBody = try JSONEncoder().encode(ResponsesRequest(model: backend.model, input: trimmedPrompt))
+        applyStandardHeaders(to: &request, backend: backend)
+        request.httpBody = try JSONEncoder().encode(ResponsesRequest(model: backend.model, input: prompt))
 
         let (data, response) = try await urlSession.data(for: request)
         guard let http = response as? HTTPURLResponse else {
@@ -71,11 +73,72 @@ public struct WispResponsesClient: @unchecked Sendable {
             text: text
         )
     }
+
+    private func performChatCompletionsRequest(prompt: String, using backend: WispModelBackend) async throws -> WispModelResponse {
+        var request = URLRequest(url: try backend.chatCompletionsURL())
+        request.httpMethod = "POST"
+        applyStandardHeaders(to: &request, backend: backend)
+        request.httpBody = try JSONEncoder().encode(
+            ChatCompletionsRequest(
+                model: backend.model,
+                messages: [
+                    ChatCompletionsRequest.Message(role: "user", content: prompt)
+                ]
+            )
+        )
+
+        let (data, response) = try await urlSession.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw WispResponsesClientError.invalidHTTPStatus(-1, "Server did not return an HTTP response.")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw WispResponsesClientError.invalidHTTPStatus(http.statusCode, body)
+        }
+
+        let decoded = try JSONDecoder().decode(ChatCompletionsResponse.self, from: data)
+        guard let text = decoded.extractedText?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else {
+            throw WispResponsesClientError.missingResponseText
+        }
+
+        return WispModelResponse(
+            id: decoded.id,
+            model: decoded.model ?? backend.model,
+            text: text
+        )
+    }
+
+    private func applyStandardHeaders(to request: inout URLRequest, backend: WispModelBackend) {
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("wisp", forHTTPHeaderField: "User-Agent")
+        if let authorizationHeader = backend.authorizationHeader() {
+            request.setValue(authorizationHeader, forHTTPHeaderField: "Authorization")
+        }
+    }
+
+    private func shouldFallbackToChatCompletions(after error: WispResponsesClientError) -> Bool {
+        guard case .invalidHTTPStatus(let statusCode, _) = error else {
+            return false
+        }
+        return [404, 405, 501].contains(statusCode)
+    }
 }
 
 private struct ResponsesRequest: Encodable {
     let model: String
     let input: String
+}
+
+private struct ChatCompletionsRequest: Encodable {
+    struct Message: Encodable {
+        let role: String
+        let content: String
+    }
+
+    let model: String
+    let messages: [Message]
 }
 
 private struct ResponsesResponse: Decodable {
@@ -109,5 +172,29 @@ private struct ResponsesResponse: Decodable {
             .compactMap(\.text)
             .joined(separator: "\n")
         return text?.isEmpty == false ? text : nil
+    }
+}
+
+private struct ChatCompletionsResponse: Decodable {
+    struct Choice: Decodable {
+        struct Message: Decodable {
+            let content: String?
+        }
+
+        let message: Message?
+        let text: String?
+    }
+
+    let id: String?
+    let model: String?
+    let choices: [Choice]
+
+    var extractedText: String? {
+        let text = choices
+            .compactMap { choice in
+                choice.message?.content ?? choice.text
+            }
+            .joined(separator: "\n")
+        return text.isEmpty ? nil : text
     }
 }

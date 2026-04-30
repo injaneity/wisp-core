@@ -1,4 +1,8 @@
-# Local Inference From A Physical iPhone
+# Network Inference From A Physical iPhone
+
+For true on-device inference, use the `llama.cpp` setup in
+`docs/ios-inference-setups.md`. This document covers server-backed inference
+where the iPhone connects to a model runtime over the network.
 
 The polished local setup uses a small trusted LAN service in front of the model
 runtime:

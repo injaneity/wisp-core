@@ -45,6 +45,7 @@ public struct WispModelBackend: Codable, Sendable, Equatable {
     public var authentication: WispBackendAuthentication
     public var authFile: URL?
     public var apiKeyEnvironmentVariable: String?
+    public var displayName: String?
 
     public init(
         provider: WispModelProvider,
@@ -53,7 +54,8 @@ public struct WispModelBackend: Codable, Sendable, Equatable {
         reasoningEffort: String? = nil,
         authentication: WispBackendAuthentication = .none,
         authFile: URL? = nil,
-        apiKeyEnvironmentVariable: String? = nil
+        apiKeyEnvironmentVariable: String? = nil,
+        displayName: String? = nil
     ) {
         self.provider = provider
         self.baseURL = baseURL ?? Self.defaultBaseURL(for: provider)
@@ -62,6 +64,7 @@ public struct WispModelBackend: Codable, Sendable, Equatable {
         self.authentication = authentication
         self.authFile = authFile
         self.apiKeyEnvironmentVariable = apiKeyEnvironmentVariable
+        self.displayName = displayName
     }
 
     public static func defaultCodex(homeDirectory: URL, model: String = "gpt-5.4", reasoningEffort: String = "medium", baseURL: String? = nil) -> Self {
@@ -76,6 +79,25 @@ public struct WispModelBackend: Codable, Sendable, Equatable {
 
     public static func localGemmaViaOllama(model: String = "gemma4") -> Self {
         Self(provider: .ollama, model: model)
+    }
+
+    public static func openAIAPI(model: String = "gpt-5.4", apiKey: String) -> Self {
+        Self(
+            provider: .openAICompatible,
+            model: model,
+            authentication: apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .none : .bearerToken(apiKey),
+            displayName: "OpenAI API"
+        )
+    }
+
+    public static func tailscaleMac(baseURL: String, model: String = "gemma4", bearerToken: String = "") -> Self {
+        Self(
+            provider: .openAICompatible,
+            baseURL: baseURL,
+            model: model,
+            authentication: bearerToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .none : .bearerToken(bearerToken),
+            displayName: "Tailscale Mac"
+        )
     }
 
     public static func defaultBaseURL(for provider: WispModelProvider) -> String {
@@ -107,6 +129,15 @@ public struct WispModelBackend: Codable, Sendable, Equatable {
             try Self.resolveCodexResponsesURL(baseURL: baseURL)
         case .openAICompatible, .ollama, .lmStudio, .llamaCPP:
             try Self.resolveOpenAICompatibleResponsesURL(baseURL: baseURL)
+        }
+    }
+
+    public func chatCompletionsURL() throws -> URL {
+        switch provider {
+        case .codex:
+            throw WispCoreError.unsupportedBackend("Codex backend does not expose a generic OpenAI-compatible chat completions endpoint.")
+        case .openAICompatible, .ollama, .lmStudio, .llamaCPP:
+            try Self.resolveOpenAICompatibleChatCompletionsURL(baseURL: baseURL)
         }
     }
 
@@ -162,6 +193,17 @@ public struct WispModelBackend: Codable, Sendable, Equatable {
             .replacingOccurrences(of: "/responses$", with: "", options: .regularExpression)
             .replacingOccurrences(of: "/chat/completions$", with: "", options: .regularExpression)
         guard let url = URL(string: versionRoot + "/models") else {
+            throw WispCoreError.invalidBaseURL(baseURL)
+        }
+        return url
+    }
+
+    private static func resolveOpenAICompatibleChatCompletionsURL(baseURL: String) throws -> URL {
+        let normalized = normalizedBaseURL(baseURL)
+        let versionRoot = normalized
+            .replacingOccurrences(of: "/responses$", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "/chat/completions$", with: "", options: .regularExpression)
+        guard let url = URL(string: versionRoot + "/chat/completions") else {
             throw WispCoreError.invalidBaseURL(baseURL)
         }
         return url

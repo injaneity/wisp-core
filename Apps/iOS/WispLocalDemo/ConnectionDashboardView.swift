@@ -1,204 +1,205 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import WispCore
 import WispUI
 
 struct ConnectionDashboardView: View {
-    private static let defaultProvider: WispModelProvider = .openAICompatible
+    private static let defaultSetup: WispInferenceSetup = .openAIAPI
+    private static let ggufType = UTType(filenameExtension: "gguf") ?? .data
 
     @StateObject private var connectionModel = WispBackendConnectionViewModel()
-    @State private var provider = Self.defaultProvider
-    @State private var baseURL = WispModelBackend.defaultBaseURL(for: Self.defaultProvider)
-    @State private var modelName = Self.defaultModel(for: Self.defaultProvider)
-    @State private var bearerToken = ""
-    @State private var prompt = "Summarize what Wisp should do next in one sentence."
-    @State private var responseText = ""
-    @State private var responseError: String?
-    @State private var isSendingPrompt = false
+    @State private var selectedSetup = Self.defaultSetup
+    @State private var chatConfiguration: WispChatConfiguration?
 
-    private let responsesClient = WispResponsesClient()
+    @State private var openAIAPIKey = ""
+    @State private var openAIModel = "gpt-5.4"
 
-    private let providerOptions: [WispModelProvider] = [
-        .openAICompatible,
-        .ollama,
-        .lmStudio,
-        .llamaCPP
-    ]
+    @State private var tailscaleBaseURL = "https://wisp-mac.tailnet.ts.net/v1"
+    @State private var tailscaleModel = "gemma4"
+    @State private var tailscaleBearerToken = ""
+
+    @State private var onDeviceConfiguration: WispOnDeviceLlamaConfiguration?
+    @State private var isShowingModelImporter = false
+    @State private var isImportingModel = false
+    @State private var modelImportError: String?
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Server") {
-                    Picker("Provider", selection: $provider) {
-                        ForEach(providerOptions, id: \.self) { option in
-                            Text(label(for: option))
-                                .tag(option)
+                Section("Setup") {
+                    Picker("Inference", selection: $selectedSetup) {
+                        ForEach(WispInferenceSetup.allCases) { setup in
+                            Label(setup.title, systemImage: setup.symbol)
+                                .tag(setup)
                         }
                     }
-
-                    TextField("Backend URL", text: $baseURL)
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
-                        .autocorrectionDisabled()
-
-                    TextField("Model", text: $modelName)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-
-                    SecureField("Bearer token", text: $bearerToken)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                    .pickerStyle(.navigationLink)
                 }
 
-                Section("Status") {
-                    WispBackendConnectionView(
-                        health: connectionModel.health,
-                        isChecking: connectionModel.isChecking,
-                        onTestConnection: testConnection
-                    )
-                    .listRowInsets(EdgeInsets())
+                selectedSetupSection
+
+                Section {
+                    Button(action: startChat) {
+                        Label("Continue to Chat", systemImage: "message")
+                    }
+                    .disabled(!canStartChat)
                 }
-
-                Section("Prompt") {
-                    TextEditor(text: $prompt)
-                        .frame(minHeight: 96)
-                        .textInputAutocapitalization(.sentences)
-                        .autocorrectionDisabled()
-
-                    Button(action: sendPrompt) {
-                        if isSendingPrompt {
-                            ProgressView()
-                        } else {
-                            Label("Send", systemImage: "paperplane")
+            }
+            .navigationTitle("Wisp Setup")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    if selectedSetup.usesRemoteBackend {
+                        Button(action: testConnection) {
+                            Image(systemName: "arrow.clockwise")
                         }
-                    }
-                    .disabled(isSendingPrompt || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                    if let responseError {
-                        Label(responseError, systemImage: "exclamationmark.triangle")
-                            .font(.callout)
-                            .foregroundStyle(.orange)
-                    }
-
-                    if !responseText.isEmpty {
-                        Text(responseText)
-                            .font(.body)
-                            .textSelection(.enabled)
-                    }
-                }
-
-                Section("Bonjour") {
-                    Button(action: discoverBackends) {
-                        if connectionModel.isDiscovering {
-                            ProgressView()
-                        } else {
-                            Label("Discover Servers", systemImage: "dot.radiowaves.left.and.right")
-                        }
-                    }
-                    .disabled(connectionModel.isDiscovering)
-
-                    ForEach(connectionModel.discoveredBackends) { backend in
-                        Button(action: { apply(backend) }) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(backend.name)
-                                    .font(.body)
-                                Text(backend.baseURL)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
+                        .accessibilityLabel("Test Connection")
+                        .disabled(connectionModel.isChecking)
                     }
                 }
             }
-            .navigationTitle("Wisp Local")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(action: testConnection) {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .accessibilityLabel("Test Connection")
-                    .disabled(connectionModel.isChecking)
+            .navigationDestination(isPresented: isChatPresented) {
+                if let chatConfiguration {
+                    WispChatView(configuration: chatConfiguration)
                 }
             }
         }
-        .onChange(of: provider) { oldValue, newValue in
-            let previousDefaultModel = Self.defaultModel(for: oldValue)
-            let shouldUseProviderDefaultModel = modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || modelName == previousDefaultModel
-            baseURL = WispModelBackend.defaultBaseURL(for: newValue)
-            if shouldUseProviderDefaultModel {
-                modelName = Self.defaultModel(for: newValue)
-            }
+        .fileImporter(
+            isPresented: $isShowingModelImporter,
+            allowedContentTypes: [Self.ggufType],
+            allowsMultipleSelection: false,
+            onCompletion: importModel
+        )
+        .onChange(of: selectedSetup) {
+            connectionModel.resetHealth()
         }
     }
 
-    private var configuredBackend: WispModelBackend {
-        let token = bearerToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        return WispModelBackend(
-            provider: provider,
-            baseURL: baseURL,
-            model: modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Self.defaultModel(for: provider) : modelName,
-            authentication: token.isEmpty ? .none : .bearerToken(token)
+    private var isChatPresented: Binding<Bool> {
+        Binding(
+            get: { chatConfiguration != nil },
+            set: { isPresented in
+                if !isPresented {
+                    chatConfiguration = nil
+                }
+            }
         )
     }
 
+    @ViewBuilder
+    private var selectedSetupSection: some View {
+        switch selectedSetup {
+        case .openAIAPI:
+            OpenAISetupSection(
+                model: $openAIModel,
+                apiKey: $openAIAPIKey,
+                health: connectionModel.health,
+                isChecking: connectionModel.isChecking,
+                onTestConnection: testConnection
+            )
+        case .onDeviceLlamaCPP:
+            OnDeviceSetupSection(
+                configuration: onDeviceConfiguration,
+                isImporting: isImportingModel,
+                importError: modelImportError,
+                onChooseModel: chooseModel
+            )
+        case .tailscaleMac:
+            TailscaleSetupSection(
+                baseURL: $tailscaleBaseURL,
+                model: $tailscaleModel,
+                bearerToken: $tailscaleBearerToken,
+                health: connectionModel.health,
+                isChecking: connectionModel.isChecking,
+                onTestConnection: testConnection
+            )
+        }
+    }
+
+    private var configuredRemoteBackend: WispModelBackend? {
+        switch selectedSetup {
+        case .openAIAPI:
+            WispModelBackend.openAIAPI(
+                model: trimmed(openAIModel).isEmpty ? "gpt-5.4" : trimmed(openAIModel),
+                apiKey: trimmed(openAIAPIKey)
+            )
+        case .tailscaleMac:
+            WispModelBackend.tailscaleMac(
+                baseURL: trimmed(tailscaleBaseURL),
+                model: trimmed(tailscaleModel).isEmpty ? "gemma4" : trimmed(tailscaleModel),
+                bearerToken: trimmed(tailscaleBearerToken)
+            )
+        case .onDeviceLlamaCPP:
+            nil
+        }
+    }
+
+    private var canStartChat: Bool {
+        switch selectedSetup {
+        case .openAIAPI:
+            !trimmed(openAIAPIKey).isEmpty && !trimmed(openAIModel).isEmpty
+        case .onDeviceLlamaCPP:
+            onDeviceConfiguration != nil && !isImportingModel
+        case .tailscaleMac:
+            URL(string: trimmed(tailscaleBaseURL)) != nil && !trimmed(tailscaleModel).isEmpty
+        }
+    }
+
     private func testConnection() {
-        connectionModel.testConnection(to: configuredBackend)
+        guard let configuredRemoteBackend else {
+            return
+        }
+        connectionModel.testConnection(to: configuredRemoteBackend)
     }
 
-    private func discoverBackends() {
-        connectionModel.discover()
+    private func startChat() {
+        switch selectedSetup {
+        case .openAIAPI:
+            chatConfiguration = .openAIAPI(
+                model: trimmed(openAIModel).isEmpty ? "gpt-5.4" : trimmed(openAIModel),
+                apiKey: trimmed(openAIAPIKey)
+            )
+        case .onDeviceLlamaCPP:
+            guard let onDeviceConfiguration else { return }
+            chatConfiguration = .onDeviceLlama(onDeviceConfiguration)
+        case .tailscaleMac:
+            chatConfiguration = .tailscaleMac(
+                baseURL: trimmed(tailscaleBaseURL),
+                model: trimmed(tailscaleModel).isEmpty ? "gemma4" : trimmed(tailscaleModel),
+                bearerToken: trimmed(tailscaleBearerToken)
+            )
+        }
     }
 
-    private func sendPrompt() {
-        isSendingPrompt = true
-        responseError = nil
-        responseText = ""
+    private func chooseModel() {
+        modelImportError = nil
+        isShowingModelImporter = true
+    }
 
-        let backend = configuredBackend
-        let promptToSend = prompt
+    private func importModel(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result, let url = urls.first else {
+            if case .failure(let error) = result {
+                modelImportError = String(describing: error)
+            }
+            return
+        }
+
+        isImportingModel = true
+        modelImportError = nil
         Task {
             do {
-                let response = try await responsesClient.respond(to: promptToSend, using: backend)
-                responseText = response.text
+                let imported = try await Task.detached {
+                    try WispOnDeviceModelStore().importModel(from: url)
+                }.value
+                onDeviceConfiguration = imported
             } catch {
-                responseError = String(describing: error)
+                modelImportError = String(describing: error)
             }
-            isSendingPrompt = false
+            isImportingModel = false
         }
     }
 
-    private func apply(_ backend: WispDiscoveredBackend) {
-        provider = backend.provider
-        baseURL = backend.baseURL
-        modelName = backend.model
-        if !backend.requiresBearerToken {
-            bearerToken = ""
-        }
-    }
-
-    private func label(for provider: WispModelProvider) -> String {
-        switch provider {
-        case .ollama:
-            return "Ollama"
-        case .lmStudio:
-            return "LM Studio"
-        case .llamaCPP:
-            return "llama.cpp"
-        case .openAICompatible:
-            return "OpenAI API"
-        case .codex:
-            return "Codex API"
-        }
-    }
-
-    private static func defaultModel(for provider: WispModelProvider) -> String {
-        switch provider {
-        case .codex, .openAICompatible:
-            return "gpt-5.4"
-        case .ollama:
-            return "gemma4"
-        case .lmStudio, .llamaCPP:
-            return "local-model"
-        }
+    private func trimmed(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

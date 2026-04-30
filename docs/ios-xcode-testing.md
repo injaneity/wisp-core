@@ -45,15 +45,17 @@ xcodebuild \
 
 The current bundle identifier is `dev.wisp.localdemo`.
 
-## Local Inference Flow
+## Inference Flows
 
-1. Run the backend on the same LAN as the phone or simulator.
-2. Advertise it over Bonjour as `_wisp-llm._tcp.` when available.
-3. Prefer HTTPS with a trusted local proxy for physical devices.
-4. Launch Wisp Local.
-5. Tap Discover Servers or enter the backend URL manually.
-6. Enter the bearer token when the backend requires one.
-7. Tap Test Connection and confirm the status, model list, and latency.
+The setup screen supports:
+
+- API key: default OpenAI API mode with `gpt-5.4`.
+- llama.cpp: import a `.gguf` model and run it directly on the iPhone.
+- Tailscale Mac: enter an OpenAI-compatible `/v1` endpoint exposed from a Mac
+  through Tailscale.
 
 For a physical iPhone, `localhost` is the phone itself. Use the server LAN host
-or Bonjour-discovered URL instead.
+or Tailscale URL for server-backed inference. For direct llama.cpp inference,
+test on device because simulator performance and memory are not representative.
+
+See `docs/ios-inference-setups.md` for setup details.

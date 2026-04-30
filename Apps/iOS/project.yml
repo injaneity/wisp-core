@@ -25,6 +25,8 @@ targets:
       - package: wisp
         product: WispCore
       - package: wisp
+        product: WispLlama
+      - package: wisp
         product: WispUI
     info:
       path: WispLocalDemo/Info.plist
@@ -33,6 +35,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
+        LSSupportsOpeningDocumentsInPlace: true
         NSLocalNetworkUsageDescription: Wisp uses the local network to discover and connect to your inference server.
         NSBonjourServices:
           - _wisp-llm._tcp.

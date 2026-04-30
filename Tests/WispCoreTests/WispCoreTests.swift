@@ -22,6 +22,51 @@ final class WispCoreTests: XCTestCase {
         XCTAssertEqual(backend.baseURL, "https://api.openai.com/v1")
         XCTAssertEqual(try backend.modelsURL().absoluteString, "https://api.openai.com/v1/models")
         XCTAssertEqual(try backend.responsesURL().absoluteString, "https://api.openai.com/v1/responses")
+        XCTAssertEqual(try backend.chatCompletionsURL().absoluteString, "https://api.openai.com/v1/chat/completions")
+    }
+
+    func testChatConfigurationBuildsThreeSetupModes() {
+        let openAI = WispChatConfiguration.openAIAPI(apiKey: "api-secret")
+        XCTAssertEqual(openAI.setup, .openAIAPI)
+        XCTAssertEqual(openAI.remoteBackend?.displayName, "OpenAI API")
+        XCTAssertEqual(openAI.remoteBackend?.model, "gpt-5.4")
+        XCTAssertEqual(openAI.remoteBackend?.authorizationHeader(), "Bearer api-secret")
+
+        let local = WispChatConfiguration.onDeviceLlama(
+            WispOnDeviceLlamaConfiguration(
+                modelName: "gemma-local",
+                modelURL: URL(fileURLWithPath: "/tmp/gemma-local.gguf")
+            )
+        )
+        XCTAssertEqual(local.setup, .onDeviceLlamaCPP)
+        XCTAssertEqual(local.onDeviceLlama?.modelName, "gemma-local")
+
+        let tailscale = WispChatConfiguration.tailscaleMac(
+            baseURL: "https://studio.tailnet.ts.net/v1",
+            model: "gemma4",
+            bearerToken: "tail-secret"
+        )
+        XCTAssertEqual(tailscale.setup, .tailscaleMac)
+        XCTAssertEqual(tailscale.remoteBackend?.displayName, "Tailscale Mac")
+        XCTAssertEqual(tailscale.remoteBackend?.baseURL, "https://studio.tailnet.ts.net/v1")
+        XCTAssertEqual(tailscale.remoteBackend?.authorizationHeader(), "Bearer tail-secret")
+    }
+
+    func testOnDeviceModelStoreImportsGGUFModel() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisp-tests-\(UUID().uuidString)", isDirectory: true)
+        let sourceDirectory = tempRoot.appendingPathComponent("Source", isDirectory: true)
+        let modelDirectory = tempRoot.appendingPathComponent("Models", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
+        let sourceURL = sourceDirectory.appendingPathComponent("gemma-local.gguf")
+        try Data("placeholder".utf8).write(to: sourceURL)
+
+        let configuration = try WispOnDeviceModelStore(rootDirectory: modelDirectory)
+            .importModel(from: sourceURL)
+
+        XCTAssertEqual(configuration.modelName, "gemma-local")
+        XCTAssertEqual(configuration.modelURL.lastPathComponent, "gemma-local.gguf")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: configuration.modelURL.path))
     }
 
     func testBearerAuthenticationCanComeFromTokenOrEnvironment() {
@@ -173,6 +218,58 @@ final class WispCoreTests: XCTestCase {
         XCTAssertEqual(response.id, "resp_123")
         XCTAssertEqual(response.model, "gpt-5.4")
         XCTAssertEqual(response.text, "Hello from the model.")
+    }
+
+    func testResponsesClientFallsBackToChatCompletions() async throws {
+        var requestedURLs: [String] = []
+        MockURLProtocol.handler = { request in
+            requestedURLs.append(request.url?.absoluteString ?? "")
+            if request.url?.path == "/v1/responses" {
+                let response = HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 404,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!
+                return (response, Data(#"{"error":"not found"}"#.utf8))
+            }
+
+            XCTAssertEqual(request.url?.absoluteString, "https://studio.tailnet.ts.net/v1/chat/completions")
+            let body = try XCTUnwrap(Self.requestBodyData(from: request))
+            let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            XCTAssertEqual(json?["model"] as? String, "gemma4")
+
+            let response = HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            let data = Data(#"{"id":"chatcmpl_123","model":"gemma4","choices":[{"message":{"content":"Hello from Tailscale."}}]}"#.utf8)
+            return (response, data)
+        }
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = WispResponsesClient(urlSession: session)
+        let backend = WispModelBackend.tailscaleMac(
+            baseURL: "https://studio.tailnet.ts.net/v1",
+            model: "gemma4"
+        )
+
+        let response = try await client.respond(to: "Hello Wisp", using: backend)
+
+        XCTAssertEqual(
+            requestedURLs,
+            [
+                "https://studio.tailnet.ts.net/v1/responses",
+                "https://studio.tailnet.ts.net/v1/chat/completions"
+            ]
+        )
+        XCTAssertEqual(response.id, "chatcmpl_123")
+        XCTAssertEqual(response.model, "gemma4")
+        XCTAssertEqual(response.text, "Hello from Tailscale.")
     }
 
     private static func requestBodyData(from request: URLRequest) -> Data? {

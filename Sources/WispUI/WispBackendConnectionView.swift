@@ -35,6 +35,10 @@ public final class WispBackendConnectionViewModel: ObservableObject {
             isDiscovering = false
         }
     }
+
+    public func resetHealth() {
+        health = nil
+    }
 }
 
 public struct WispBackendConnectionView: View {
@@ -83,7 +87,7 @@ public struct WispBackendConnectionView: View {
                     GridRow {
                         Text("Provider")
                             .foregroundStyle(.secondary)
-                        Text(providerTitle(for: health.backend.provider))
+                        Text(providerTitle(for: health.backend))
                     }
                     GridRow {
                         Text("Model")
@@ -187,8 +191,12 @@ public struct WispBackendConnectionView: View {
         }
     }
 
-    private func providerTitle(for provider: WispModelProvider) -> String {
-        switch provider {
+    private func providerTitle(for backend: WispModelBackend) -> String {
+        if let displayName = backend.displayName, !displayName.isEmpty {
+            return displayName
+        }
+
+        return switch backend.provider {
         case .codex:
             "Codex API"
         case .openAICompatible:
