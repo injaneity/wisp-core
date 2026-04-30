@@ -3,5 +3,12 @@ paths:
   repo_root: "/Users/SG4195/Documents/other/wisp-core"
   wiki_root: ""
 model:
+  provider: "codex" # codex, ollama, lmstudio, llamacpp, openai_compatible
   name: "gpt-5.4"
   reasoning_effort: "medium"
+  # For local Gemma via Ollama:
+  # provider: "ollama"
+  # name: "gemma4"
+  # base_url: "http://localhost:11434/v1"
+  # For generic OpenAI-compatible servers that need auth:
+  # api_key_env: "OPENAI_API_KEY"

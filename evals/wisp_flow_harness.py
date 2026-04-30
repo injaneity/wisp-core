@@ -32,27 +32,49 @@ Prefer short namespaced tags such as:
 """
 
 
-def render_workspace_config(repo_root: Path, wiki_root: Path, base_url: Optional[str], model: Optional[str], reasoning_effort: Optional[str]) -> str:
+def render_workspace_config(
+    repo_root: Path,
+    wiki_root: Path,
+    provider: Optional[str],
+    base_url: Optional[str],
+    model: Optional[str],
+    reasoning_effort: Optional[str],
+    api_key_env: Optional[str],
+) -> str:
+    local_providers = {"ollama", "lmstudio", "lm-studio", "llamacpp", "llama.cpp"}
+    default_model = "gemma4" if (provider or "").lower() in local_providers else "gpt-5.4"
     lines = [
         "# Wisp workspace configuration",
         "paths:",
         f'  repo_root: "{repo_root}"',
         f'  wiki_root: "{wiki_root}"',
         "model:",
-        f'  name: "{model or "gpt-5.4"}"',
+        f'  provider: "{provider or "codex"}"',
+        f'  name: "{model or default_model}"',
         f'  reasoning_effort: "{reasoning_effort or "medium"}"',
     ]
     if base_url:
         lines.append(f'  base_url: "{base_url}"')
+    if api_key_env:
+        lines.append(f'  api_key_env: "{api_key_env}"')
     return "\n".join(lines) + "\n"
 
 
-def materialize_workspace(case: Dict[str, Any], root: Path, repo_root: Path, base_url: Optional[str], model: Optional[str], reasoning_effort: Optional[str]) -> Dict[str, Path]:
+def materialize_workspace(
+    case: Dict[str, Any],
+    root: Path,
+    repo_root: Path,
+    provider: Optional[str],
+    base_url: Optional[str],
+    model: Optional[str],
+    reasoning_effort: Optional[str],
+    api_key_env: Optional[str],
+) -> Dict[str, Path]:
     work_dir = root / "work"
     wiki_dir = root / "wiki"
     config_path = work_dir / ".wisp" / "config.yaml"
     wiki_dir.mkdir(parents=True, exist_ok=True)
-    write_text(config_path, render_workspace_config(repo_root, wiki_dir, base_url, model, reasoning_effort))
+    write_text(config_path, render_workspace_config(repo_root, wiki_dir, provider, base_url, model, reasoning_effort, api_key_env))
 
     schema_path = wiki_dir / "schema.md"
     if not schema_path.exists():
@@ -155,10 +177,21 @@ def build_case_result(case: Dict[str, Any], completed: subprocess.CompletedProce
     return result
 
 
-def run_case(case: Dict[str, Any], wisp_bin: Path, repo_root: Path, base_url: Optional[str], model: Optional[str], reasoning_effort: Optional[str], timeout: int, keep_temp: bool) -> Dict[str, Any]:
+def run_case(
+    case: Dict[str, Any],
+    wisp_bin: Path,
+    repo_root: Path,
+    provider: Optional[str],
+    base_url: Optional[str],
+    model: Optional[str],
+    reasoning_effort: Optional[str],
+    api_key_env: Optional[str],
+    timeout: int,
+    keep_temp: bool,
+) -> Dict[str, Any]:
     tmp_root = Path(tempfile.mkdtemp(prefix=f"wisp-eval-{case['id']}-"))
     try:
-        paths = materialize_workspace(case, tmp_root, repo_root, base_url, model, reasoning_effort)
+        paths = materialize_workspace(case, tmp_root, repo_root, provider, base_url, model, reasoning_effort, api_key_env)
         completed = run_wisp(wisp_bin, paths["work_dir"], case.get("input", {}).get("capture", ""), timeout)
         events = parse_session_log(paths["session_log"])
         files = collect_workspace_files(paths["wiki_dir"])
@@ -178,8 +211,10 @@ def main() -> None:
     parser.add_argument("--wisp-bin", default=".build/debug/wisp", help="Path to built wisp binary")
     parser.add_argument("--repo-root", default=".", help="Repo root to embed in generated config")
     parser.add_argument("--base-url", default=None, help="Override model base_url in generated config")
+    parser.add_argument("--provider", default=None, help="Override model provider in generated config")
     parser.add_argument("--model", default=None, help="Override model name in generated config")
     parser.add_argument("--reasoning-effort", default=None, help="Override reasoning effort in generated config")
+    parser.add_argument("--api-key-env", default=None, help="Environment variable name for OpenAI-compatible API bearer auth")
     parser.add_argument("--timeout", type=int, default=180, help="Per-case timeout in seconds")
     parser.add_argument("--case", action="append", default=[], help="Run only matching case id(s)")
     parser.add_argument("--keep-temp", action="store_true", help="Keep temporary workspaces for inspection")
@@ -198,7 +233,20 @@ def main() -> None:
     results = []
     for case in cases:
         print(f"Running {case['id']}...", file=sys.stderr)
-        results.append(run_case(case, wisp_bin, repo_root, args.base_url, args.model, args.reasoning_effort, args.timeout, args.keep_temp))
+        results.append(
+            run_case(
+                case,
+                wisp_bin,
+                repo_root,
+                args.provider,
+                args.base_url,
+                args.model,
+                args.reasoning_effort,
+                args.api_key_env,
+                args.timeout,
+                args.keep_temp,
+            )
+        )
 
     output = {"results": results}
     out_path = Path(args.out)

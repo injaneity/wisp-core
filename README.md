@@ -21,6 +21,28 @@ Contributors retain copyright in their contributions and license them to the
 project under the repository license through signed-off commits (`git commit
 -s`).
 
+## Package Structure
+
+- `WispCore`: iOS/macOS-compatible library with app-facing models,
+  markdown rendering, and model backend configuration.
+- `wisp`: macOS CLI executable that keeps the existing terminal workflow and
+  filesystem/tool execution behavior.
+
+The CLI defaults to the Codex backend with `gpt-5.4`, but `.wisp/config.yaml`
+can select a local OpenAI-compatible backend:
+
+```yaml
+model:
+  provider: "ollama"
+  name: "gemma4"
+  base_url: "http://localhost:11434/v1"
+```
+
+Supported provider values are `codex`, `ollama`, `lmstudio`, `llamacpp`, and
+`openai_compatible`. For authenticated OpenAI-compatible servers, set
+`api_key_env` to the name of an environment variable containing the bearer
+token.
+
 ## Development
 
 - Build: `swift build`
