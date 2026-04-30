@@ -10,6 +10,12 @@ struct ConnectionDashboardView: View {
     @State private var baseURL = WispModelBackend.defaultBaseURL(for: Self.defaultProvider)
     @State private var modelName = Self.defaultModel(for: Self.defaultProvider)
     @State private var bearerToken = ""
+    @State private var prompt = "Summarize what Wisp should do next in one sentence."
+    @State private var responseText = ""
+    @State private var responseError: String?
+    @State private var isSendingPrompt = false
+
+    private let responsesClient = WispResponsesClient()
 
     private let providerOptions: [WispModelProvider] = [
         .openAICompatible,
@@ -50,6 +56,34 @@ struct ConnectionDashboardView: View {
                         onTestConnection: testConnection
                     )
                     .listRowInsets(EdgeInsets())
+                }
+
+                Section("Prompt") {
+                    TextEditor(text: $prompt)
+                        .frame(minHeight: 96)
+                        .textInputAutocapitalization(.sentences)
+                        .autocorrectionDisabled()
+
+                    Button(action: sendPrompt) {
+                        if isSendingPrompt {
+                            ProgressView()
+                        } else {
+                            Label("Send", systemImage: "paperplane")
+                        }
+                    }
+                    .disabled(isSendingPrompt || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    if let responseError {
+                        Label(responseError, systemImage: "exclamationmark.triangle")
+                            .font(.callout)
+                            .foregroundStyle(.orange)
+                    }
+
+                    if !responseText.isEmpty {
+                        Text(responseText)
+                            .font(.body)
+                            .textSelection(.enabled)
+                    }
                 }
 
                 Section("Bonjour") {
@@ -112,6 +146,24 @@ struct ConnectionDashboardView: View {
 
     private func discoverBackends() {
         connectionModel.discover()
+    }
+
+    private func sendPrompt() {
+        isSendingPrompt = true
+        responseError = nil
+        responseText = ""
+
+        let backend = configuredBackend
+        let promptToSend = prompt
+        Task {
+            do {
+                let response = try await responsesClient.respond(to: promptToSend, using: backend)
+                responseText = response.text
+            } catch {
+                responseError = String(describing: error)
+            }
+            isSendingPrompt = false
+        }
     }
 
     private func apply(_ backend: WispDiscoveredBackend) {

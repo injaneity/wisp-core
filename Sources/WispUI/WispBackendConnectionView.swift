@@ -38,6 +38,7 @@ public final class WispBackendConnectionViewModel: ObservableObject {
 }
 
 public struct WispBackendConnectionView: View {
+    private let visibleModelLimit = 4
     private let health: WispBackendHealth?
     private let isChecking: Bool
     private let onTestConnection: () -> Void
@@ -82,7 +83,7 @@ public struct WispBackendConnectionView: View {
                     GridRow {
                         Text("Provider")
                             .foregroundStyle(.secondary)
-                        Text(health.backend.provider.rawValue)
+                        Text(providerTitle(for: health.backend.provider))
                     }
                     GridRow {
                         Text("Model")
@@ -101,17 +102,29 @@ public struct WispBackendConnectionView: View {
                             .foregroundStyle(.secondary)
                         Text(health.message)
                     }
+                    if !health.models.isEmpty {
+                        GridRow {
+                            Text("Models")
+                                .foregroundStyle(.secondary)
+                            Text("\(health.models.count) available")
+                        }
+                    }
                 }
                 .font(.callout)
 
                 if !health.models.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Available Models")
+                        Text("Sample Models")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
-                        ForEach(health.models, id: \.self) { model in
+                        ForEach(Array(health.models.prefix(visibleModelLimit)), id: \.self) { model in
                             Label(model, systemImage: "cpu")
                                 .font(.callout)
+                        }
+                        if health.models.count > visibleModelLimit {
+                            Text("+ \(health.models.count - visibleModelLimit) more")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -171,6 +184,21 @@ public struct WispBackendConnectionView: View {
             return .orange
         case .unreachable:
             return .red
+        }
+    }
+
+    private func providerTitle(for provider: WispModelProvider) -> String {
+        switch provider {
+        case .codex:
+            "Codex API"
+        case .openAICompatible:
+            "OpenAI API"
+        case .ollama:
+            "Ollama"
+        case .lmStudio:
+            "LM Studio"
+        case .llamaCPP:
+            "llama.cpp"
         }
     }
 }

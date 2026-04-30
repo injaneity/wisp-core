@@ -136,6 +136,68 @@ final class WispCoreTests: XCTestCase {
         XCTAssertEqual(health.statusCode, 200)
         XCTAssertEqual(health.models, ["gemma4"])
     }
+
+    func testResponsesClientSendsPromptToResponsesEndpoint() async throws {
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer api-secret")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+            XCTAssertEqual(request.url?.absoluteString, "https://api.openai.com/v1/responses")
+
+            let body = try XCTUnwrap(Self.requestBodyData(from: request))
+            let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            XCTAssertEqual(json?["model"] as? String, "gpt-5.4")
+            XCTAssertEqual(json?["input"] as? String, "Hello Wisp")
+
+            let response = HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            let data = Data(#"{"id":"resp_123","model":"gpt-5.4","output_text":"Hello from the model."}"#.utf8)
+            return (response, data)
+        }
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = WispResponsesClient(urlSession: session)
+        let backend = WispModelBackend(
+            provider: .openAICompatible,
+            model: "gpt-5.4",
+            authentication: .bearerToken("api-secret")
+        )
+
+        let response = try await client.respond(to: "Hello Wisp", using: backend)
+
+        XCTAssertEqual(response.id, "resp_123")
+        XCTAssertEqual(response.model, "gpt-5.4")
+        XCTAssertEqual(response.text, "Hello from the model.")
+    }
+
+    private static func requestBodyData(from request: URLRequest) -> Data? {
+        if let httpBody = request.httpBody {
+            return httpBody
+        }
+        guard let stream = request.httpBodyStream else {
+            return nil
+        }
+
+        stream.open()
+        defer { stream.close() }
+
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 1_024)
+        while stream.hasBytesAvailable {
+            let readCount = stream.read(&buffer, maxLength: buffer.count)
+            if readCount > 0 {
+                data.append(buffer, count: readCount)
+            } else {
+                break
+            }
+        }
+        return data
+    }
 }
 
 final class MockURLProtocol: URLProtocol {
