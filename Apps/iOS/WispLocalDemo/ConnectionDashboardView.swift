@@ -3,17 +3,19 @@ import WispCore
 import WispUI
 
 struct ConnectionDashboardView: View {
+    private static let defaultProvider: WispModelProvider = .openAICompatible
+
     @StateObject private var connectionModel = WispBackendConnectionViewModel()
-    @State private var provider: WispModelProvider = .ollama
-    @State private var baseURL = WispModelBackend.defaultBaseURL(for: .ollama)
-    @State private var modelName = "gemma4"
+    @State private var provider = Self.defaultProvider
+    @State private var baseURL = WispModelBackend.defaultBaseURL(for: Self.defaultProvider)
+    @State private var modelName = Self.defaultModel(for: Self.defaultProvider)
     @State private var bearerToken = ""
 
     private let providerOptions: [WispModelProvider] = [
+        .openAICompatible,
         .ollama,
         .lmStudio,
-        .llamaCPP,
-        .openAICompatible
+        .llamaCPP
     ]
 
     var body: some View {
@@ -84,10 +86,12 @@ struct ConnectionDashboardView: View {
                 }
             }
         }
-        .onChange(of: provider) { _, newValue in
+        .onChange(of: provider) { oldValue, newValue in
+            let previousDefaultModel = Self.defaultModel(for: oldValue)
+            let shouldUseProviderDefaultModel = modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || modelName == previousDefaultModel
             baseURL = WispModelBackend.defaultBaseURL(for: newValue)
-            if modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                modelName = defaultModel(for: newValue)
+            if shouldUseProviderDefaultModel {
+                modelName = Self.defaultModel(for: newValue)
             }
         }
     }
@@ -97,7 +101,7 @@ struct ConnectionDashboardView: View {
         return WispModelBackend(
             provider: provider,
             baseURL: baseURL,
-            model: modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? defaultModel(for: provider) : modelName,
+            model: modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Self.defaultModel(for: provider) : modelName,
             authentication: token.isEmpty ? .none : .bearerToken(token)
         )
     }
@@ -128,17 +132,17 @@ struct ConnectionDashboardView: View {
         case .llamaCPP:
             return "llama.cpp"
         case .openAICompatible:
-            return "OpenAI compatible"
+            return "OpenAI API"
         case .codex:
-            return "Codex"
+            return "Codex API"
         }
     }
 
-    private func defaultModel(for provider: WispModelProvider) -> String {
+    private static func defaultModel(for provider: WispModelProvider) -> String {
         switch provider {
-        case .codex:
+        case .codex, .openAICompatible:
             return "gpt-5.4"
-        case .ollama, .openAICompatible:
+        case .ollama:
             return "gemma4"
         case .lmStudio, .llamaCPP:
             return "local-model"

@@ -82,7 +82,9 @@ public struct WispModelBackend: Codable, Sendable, Equatable {
         switch provider {
         case .codex:
             "https://chatgpt.com/backend-api/codex"
-        case .openAICompatible, .ollama:
+        case .openAICompatible:
+            "https://api.openai.com/v1"
+        case .ollama:
             "http://localhost:11434/v1"
         case .lmStudio:
             "http://localhost:1234/v1"

@@ -16,6 +16,14 @@ final class WispCoreTests: XCTestCase {
         XCTAssertEqual(WispModelProvider(configValue: "openai-compatible"), .openAICompatible)
     }
 
+    func testOpenAICompatibleBackendDefaultsToOpenAIAPI() throws {
+        let backend = WispModelBackend(provider: .openAICompatible, model: "gpt-5.4")
+
+        XCTAssertEqual(backend.baseURL, "https://api.openai.com/v1")
+        XCTAssertEqual(try backend.modelsURL().absoluteString, "https://api.openai.com/v1/models")
+        XCTAssertEqual(try backend.responsesURL().absoluteString, "https://api.openai.com/v1/responses")
+    }
+
     func testBearerAuthenticationCanComeFromTokenOrEnvironment() {
         let tokenBackend = WispModelBackend(
             provider: .ollama,
