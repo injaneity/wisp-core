@@ -141,7 +141,7 @@ extension WispInferenceSetup {
         case .onDeviceLlamaCPP:
             "iphone.gen3"
         case .tailscaleMac:
-            "network"
+            "desktopcomputer"
         }
     }
 

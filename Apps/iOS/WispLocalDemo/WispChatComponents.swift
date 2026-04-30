@@ -54,7 +54,7 @@ struct ConfigurationBanner: View {
         case .onDeviceLlamaCPP:
             "iphone.gen3"
         case .tailscaleMac:
-            "network"
+            "desktopcomputer"
         }
     }
 
