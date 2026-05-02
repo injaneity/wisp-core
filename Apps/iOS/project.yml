@@ -37,6 +37,8 @@ targets:
         UILaunchScreen: {}
         LSSupportsOpeningDocumentsInPlace: true
         NSLocalNetworkUsageDescription: Wisp uses the local network to discover and connect to your inference server.
+        NSMicrophoneUsageDescription: Wisp uses the microphone for fast voice capture.
+        NSSpeechRecognitionUsageDescription: Wisp uses speech recognition to turn fast voice capture into text.
         NSBonjourServices:
           - _wisp-llm._tcp.
         NSAppTransportSecurity:

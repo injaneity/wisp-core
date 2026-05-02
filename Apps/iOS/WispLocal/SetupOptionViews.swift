@@ -8,12 +8,14 @@ struct OpenAISetupSection: View {
     let health: WispBackendHealth?
     let isChecking: Bool
     let onTestConnection: () -> Void
+    @State private var isUsingCustomModel = false
 
     var body: some View {
         Section("OpenAI API") {
-            TextField("Model", text: $model)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
+            OpenAIModelDropdown(
+                model: $model,
+                isUsingCustomModel: $isUsingCustomModel
+            )
 
             SecureField("API key", text: $apiKey)
                 .textInputAutocapitalization(.never)
@@ -27,6 +29,100 @@ struct OpenAISetupSection: View {
             .listRowInsets(EdgeInsets())
         }
     }
+}
+
+private struct OpenAIModelDropdown: View {
+    @Binding var model: String
+    @Binding var isUsingCustomModel: Bool
+
+    private let supportedModels = [
+        OpenAIModelChoice(id: "gpt-5.4", title: "GPT-5.4", subtitle: "Current Wisp default"),
+        OpenAIModelChoice(id: "gpt-5.5", title: "GPT-5.5", subtitle: "Latest GPT model")
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Menu {
+                ForEach(supportedModels) { choice in
+                    Button {
+                        model = choice.id
+                        isUsingCustomModel = false
+                    } label: {
+                        if model == choice.id && !isUsingCustomModel {
+                            Label(choice.title, systemImage: "checkmark")
+                        } else {
+                            Text(choice.title)
+                        }
+                    }
+                }
+
+                Divider()
+
+                Button {
+                    isUsingCustomModel = true
+                } label: {
+                    if isCustomModel {
+                        Label("Custom model", systemImage: "checkmark")
+                    } else {
+                        Text("Custom model")
+                    }
+                }
+            } label: {
+                HStack(spacing: 12) {
+                    Text("Supported model")
+                        .foregroundStyle(.primary)
+
+                    Spacer(minLength: 12)
+
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(selectedTitle)
+                            .foregroundStyle(.primary)
+                        if let subtitle = selectedSubtitle {
+                            Text(subtitle)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .multilineTextAlignment(.trailing)
+
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+
+            if isCustomModel {
+                TextField("Custom model", text: $model)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            }
+        }
+        .onAppear {
+            isUsingCustomModel = !supportedModels.contains { $0.id == model }
+        }
+    }
+
+    private var isCustomModel: Bool {
+        isUsingCustomModel || !supportedModels.contains { $0.id == model }
+    }
+
+    private var selectedTitle: String {
+        if isCustomModel {
+            return model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Custom" : model
+        }
+        return supportedModels.first { $0.id == model }?.title ?? model
+    }
+
+    private var selectedSubtitle: String? {
+        isCustomModel ? nil : supportedModels.first { $0.id == model }?.subtitle
+    }
+}
+
+private struct OpenAIModelChoice: Identifiable {
+    var id: String
+    var title: String
+    var subtitle: String
 }
 
 struct OnDeviceSetupSection: View {

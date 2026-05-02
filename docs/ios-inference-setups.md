@@ -1,6 +1,7 @@
 # iOS Inference Setups
 
 The iOS app presents three setup modes before opening the chat screen.
+It also exposes a Fast Capture shortcut for Action Button and Shortcuts usage.
 
 ## API key
 
@@ -13,6 +14,9 @@ Default mode.
 
 The app sends a Responses API request first. For OpenAI-compatible servers that
 do not implement `/v1/responses`, it falls back to `/v1/chat/completions`.
+
+The setup screen uses a supported-model dropdown for common OpenAI API choices
+and keeps a custom model option available for newly released or private models.
 
 ## llama.cpp
 
@@ -54,3 +58,24 @@ https://<mac-name>.<tailnet-name>.ts.net/v1
 
 For llama.cpp server on the Mac, expose the server in the same way and keep the
 app base URL rooted at `/v1`.
+
+## Fast Capture and Action Button
+
+The app registers an App Shortcut named `Fast Capture with Wisp`.
+
+Use it from Shortcuts, Siri, Spotlight, or on supported iPhones:
+
+```text
+Settings > Action Button > Shortcut > Wisp Local > Fast Capture
+```
+
+Fast Capture opens a dedicated capture screen with:
+
+- quick text entry
+- speech capture using iOS speech recognition
+- the currently selected backend from setup
+- a `Continue in Chat` handoff after Wisp responds
+
+The simulator can test the screen through the `Fast Capture` button on setup.
+The physical iPhone is required to validate the actual Action Button long-press
+and real microphone behavior.

@@ -8,22 +8,36 @@
 
 /* Begin PBXBuildFile section */
 		057CDC773618BCB6FB266B2B /* WispUI in Frameworks */ = {isa = PBXBuildFile; productRef = 2DA43399A46FBB5C52E63A10 /* WispUI */; };
+		0E874B11F5F0878CEDE69338 /* WispAppRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD3F4712B4C19CE35E83F0F5 /* WispAppRouter.swift */; };
+		2DF3E247F3BCD7CD4F75EC97 /* WispRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26FE40527F7C2F18B504E275 /* WispRootView.swift */; };
 		5390FCA52F8474047476B332 /* SetupOptionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0171F686AC70E5F8DFB90F16 /* SetupOptionViews.swift */; };
+		94C37E9005D02CBA8C3CC4C0 /* WispAppShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = C61C17B37CFB475EADA6B6EF /* WispAppShortcuts.swift */; };
+		A4C607BD823ECB73DA2A4BE3 /* WispPromptBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E60DB7030A9FC000CAB44D8 /* WispPromptBuilder.swift */; };
 		AEAD8A028F64B4FA9A18108A /* WispChatComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A856E9128DAF80C195C976FF /* WispChatComponents.swift */; };
+		B26FE6505C2B87C87BED1B11 /* WispAppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21A79D9A3DFA3CC1EF94581 /* WispAppSettings.swift */; };
 		BC05EA44F01674D5741CA10F /* WispCore in Frameworks */ = {isa = PBXBuildFile; productRef = E296F2EC99A3C4D4609F73E1 /* WispCore */; };
 		BD072CCFBD5851A3490C23CC /* WispChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDDB5C800E1135822952ADDD /* WispChatView.swift */; };
 		BEB1535215D145A6E53572FD /* WispLlama in Frameworks */ = {isa = PBXBuildFile; productRef = 31B264A62652FF4C53F5DF5D /* WispLlama */; };
+		C040C59EAB8F9188F65E4CDA /* WispFastCaptureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 874F75B95EA20902FE1FF66B /* WispFastCaptureView.swift */; };
 		C2B8D5D7169B4F83AC54B5A6 /* WispLocalApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B66B9D455A74742EBE202D3 /* WispLocalApp.swift */; };
 		CCC1DD2F8B89586FACA3751B /* ConnectionDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CECF31DCF92D303A564A713 /* ConnectionDashboardView.swift */; };
+		D7377EDDCDF4B68F5367274F /* WispCredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6381847E79C11EBE470826D1 /* WispCredentialStore.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		0171F686AC70E5F8DFB90F16 /* SetupOptionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupOptionViews.swift; sourceTree = "<group>"; };
 		0B66B9D455A74742EBE202D3 /* WispLocalApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WispLocalApp.swift; sourceTree = "<group>"; };
 		1EDF2D68A120C7866433E328 /* wisp-core */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "wisp-core"; path = ../..; sourceTree = SOURCE_ROOT; };
+		26FE40527F7C2F18B504E275 /* WispRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WispRootView.swift; sourceTree = "<group>"; };
+		2E60DB7030A9FC000CAB44D8 /* WispPromptBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WispPromptBuilder.swift; sourceTree = "<group>"; };
 		4CECF31DCF92D303A564A713 /* ConnectionDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionDashboardView.swift; sourceTree = "<group>"; };
+		6381847E79C11EBE470826D1 /* WispCredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WispCredentialStore.swift; sourceTree = "<group>"; };
+		874F75B95EA20902FE1FF66B /* WispFastCaptureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WispFastCaptureView.swift; sourceTree = "<group>"; };
 		97721A1E3D0762A863F471F3 /* WispLocal.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = WispLocal.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A856E9128DAF80C195C976FF /* WispChatComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WispChatComponents.swift; sourceTree = "<group>"; };
+		BD3F4712B4C19CE35E83F0F5 /* WispAppRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WispAppRouter.swift; sourceTree = "<group>"; };
+		C61C17B37CFB475EADA6B6EF /* WispAppShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WispAppShortcuts.swift; sourceTree = "<group>"; };
+		D21A79D9A3DFA3CC1EF94581 /* WispAppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WispAppSettings.swift; sourceTree = "<group>"; };
 		DDDB5C800E1135822952ADDD /* WispChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WispChatView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -46,9 +60,16 @@
 			children = (
 				4CECF31DCF92D303A564A713 /* ConnectionDashboardView.swift */,
 				0171F686AC70E5F8DFB90F16 /* SetupOptionViews.swift */,
+				BD3F4712B4C19CE35E83F0F5 /* WispAppRouter.swift */,
+				D21A79D9A3DFA3CC1EF94581 /* WispAppSettings.swift */,
+				C61C17B37CFB475EADA6B6EF /* WispAppShortcuts.swift */,
 				A856E9128DAF80C195C976FF /* WispChatComponents.swift */,
 				DDDB5C800E1135822952ADDD /* WispChatView.swift */,
+				6381847E79C11EBE470826D1 /* WispCredentialStore.swift */,
+				874F75B95EA20902FE1FF66B /* WispFastCaptureView.swift */,
 				0B66B9D455A74742EBE202D3 /* WispLocalApp.swift */,
+				2E60DB7030A9FC000CAB44D8 /* WispPromptBuilder.swift */,
+				26FE40527F7C2F18B504E275 /* WispRootView.swift */,
 			);
 			path = WispLocal;
 			sourceTree = "<group>";
@@ -145,9 +166,16 @@
 			files = (
 				CCC1DD2F8B89586FACA3751B /* ConnectionDashboardView.swift in Sources */,
 				5390FCA52F8474047476B332 /* SetupOptionViews.swift in Sources */,
+				0E874B11F5F0878CEDE69338 /* WispAppRouter.swift in Sources */,
+				B26FE6505C2B87C87BED1B11 /* WispAppSettings.swift in Sources */,
+				94C37E9005D02CBA8C3CC4C0 /* WispAppShortcuts.swift in Sources */,
 				AEAD8A028F64B4FA9A18108A /* WispChatComponents.swift in Sources */,
 				BD072CCFBD5851A3490C23CC /* WispChatView.swift in Sources */,
+				D7377EDDCDF4B68F5367274F /* WispCredentialStore.swift in Sources */,
+				C040C59EAB8F9188F65E4CDA /* WispFastCaptureView.swift in Sources */,
 				C2B8D5D7169B4F83AC54B5A6 /* WispLocalApp.swift in Sources */,
+				A4C607BD823ECB73DA2A4BE3 /* WispPromptBuilder.swift in Sources */,
+				2DF3E247F3BCD7CD4F75EC97 /* WispRootView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

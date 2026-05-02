@@ -4,21 +4,12 @@ import WispCore
 import WispUI
 
 struct ConnectionDashboardView: View {
-    private static let defaultSetup: WispInferenceSetup = .openAIAPI
     private static let ggufType = UTType(filenameExtension: "gguf") ?? .data
 
+    @EnvironmentObject private var settings: WispAppSettings
     @StateObject private var connectionModel = WispBackendConnectionViewModel()
-    @State private var selectedSetup = Self.defaultSetup
     @State private var chatConfiguration: WispChatConfiguration?
 
-    @State private var openAIAPIKey = ""
-    @State private var openAIModel = "gpt-5.4"
-
-    @State private var tailscaleBaseURL = "https://wisp-mac.tailnet.ts.net/v1"
-    @State private var tailscaleModel = "gemma4"
-    @State private var tailscaleBearerToken = ""
-
-    @State private var onDeviceConfiguration: WispOnDeviceLlamaConfiguration?
     @State private var isShowingModelImporter = false
     @State private var isImportingModel = false
     @State private var modelImportError: String?
@@ -27,7 +18,7 @@ struct ConnectionDashboardView: View {
         NavigationStack {
             Form {
                 Section("Setup") {
-                    Picker("Inference", selection: $selectedSetup) {
+                    Picker("Inference", selection: $settings.selectedSetup) {
                         ForEach(WispInferenceSetup.allCases) { setup in
                             Label(setup.title, systemImage: setup.symbol)
                                 .tag(setup)
@@ -39,6 +30,15 @@ struct ConnectionDashboardView: View {
                 selectedSetupSection
 
                 Section {
+                    Button(action: startFastCapture) {
+                        Label("Fast Capture", systemImage: "bolt.fill")
+                    }
+                    .disabled(!canStartChat)
+                } footer: {
+                    Text("Use this to test the Action Button shortcut flow from inside the simulator.")
+                }
+
+                Section {
                     Button(action: startChat) {
                         Label("Continue to Chat", systemImage: "message")
                     }
@@ -48,7 +48,7 @@ struct ConnectionDashboardView: View {
             .navigationTitle("Wisp Setup")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    if selectedSetup.usesRemoteBackend {
+                    if settings.selectedSetup.usesRemoteBackend {
                         Button(action: testConnection) {
                             Image(systemName: "arrow.clockwise")
                         }
@@ -69,7 +69,7 @@ struct ConnectionDashboardView: View {
             allowsMultipleSelection: false,
             onCompletion: importModel
         )
-        .onChange(of: selectedSetup) {
+        .onChange(of: settings.selectedSetup) {
             connectionModel.resetHealth()
         }
     }
@@ -87,27 +87,27 @@ struct ConnectionDashboardView: View {
 
     @ViewBuilder
     private var selectedSetupSection: some View {
-        switch selectedSetup {
+        switch settings.selectedSetup {
         case .openAIAPI:
             OpenAISetupSection(
-                model: $openAIModel,
-                apiKey: $openAIAPIKey,
+                model: $settings.openAIModel,
+                apiKey: $settings.openAIAPIKey,
                 health: connectionModel.health,
                 isChecking: connectionModel.isChecking,
                 onTestConnection: testConnection
             )
         case .onDeviceLlamaCPP:
             OnDeviceSetupSection(
-                configuration: onDeviceConfiguration,
+                configuration: settings.onDeviceConfiguration,
                 isImporting: isImportingModel,
                 importError: modelImportError,
                 onChooseModel: chooseModel
             )
         case .tailscaleMac:
             TailscaleSetupSection(
-                baseURL: $tailscaleBaseURL,
-                model: $tailscaleModel,
-                bearerToken: $tailscaleBearerToken,
+                baseURL: $settings.tailscaleBaseURL,
+                model: $settings.tailscaleModel,
+                bearerToken: $settings.tailscaleBearerToken,
                 health: connectionModel.health,
                 isChecking: connectionModel.isChecking,
                 onTestConnection: testConnection
@@ -115,59 +115,23 @@ struct ConnectionDashboardView: View {
         }
     }
 
-    private var configuredRemoteBackend: WispModelBackend? {
-        switch selectedSetup {
-        case .openAIAPI:
-            WispModelBackend.openAIAPI(
-                model: trimmed(openAIModel).isEmpty ? "gpt-5.4" : trimmed(openAIModel),
-                apiKey: trimmed(openAIAPIKey)
-            )
-        case .tailscaleMac:
-            WispModelBackend.tailscaleMac(
-                baseURL: trimmed(tailscaleBaseURL),
-                model: trimmed(tailscaleModel).isEmpty ? "gemma4" : trimmed(tailscaleModel),
-                bearerToken: trimmed(tailscaleBearerToken)
-            )
-        case .onDeviceLlamaCPP:
-            nil
-        }
-    }
-
     private var canStartChat: Bool {
-        switch selectedSetup {
-        case .openAIAPI:
-            !trimmed(openAIAPIKey).isEmpty && !trimmed(openAIModel).isEmpty
-        case .onDeviceLlamaCPP:
-            onDeviceConfiguration != nil && !isImportingModel
-        case .tailscaleMac:
-            URL(string: trimmed(tailscaleBaseURL)) != nil && !trimmed(tailscaleModel).isEmpty
-        }
+        settings.canStartChat && !isImportingModel
     }
 
     private func testConnection() {
-        guard let configuredRemoteBackend else {
+        guard let backend = settings.configuredRemoteBackend else {
             return
         }
-        connectionModel.testConnection(to: configuredRemoteBackend)
+        connectionModel.testConnection(to: backend)
     }
 
     private func startChat() {
-        switch selectedSetup {
-        case .openAIAPI:
-            chatConfiguration = .openAIAPI(
-                model: trimmed(openAIModel).isEmpty ? "gpt-5.4" : trimmed(openAIModel),
-                apiKey: trimmed(openAIAPIKey)
-            )
-        case .onDeviceLlamaCPP:
-            guard let onDeviceConfiguration else { return }
-            chatConfiguration = .onDeviceLlama(onDeviceConfiguration)
-        case .tailscaleMac:
-            chatConfiguration = .tailscaleMac(
-                baseURL: trimmed(tailscaleBaseURL),
-                model: trimmed(tailscaleModel).isEmpty ? "gemma4" : trimmed(tailscaleModel),
-                bearerToken: trimmed(tailscaleBearerToken)
-            )
-        }
+        chatConfiguration = settings.chatConfiguration
+    }
+
+    private func startFastCapture() {
+        WispAppRouter.shared.openFastCapture()
     }
 
     private func chooseModel() {
@@ -190,19 +154,16 @@ struct ConnectionDashboardView: View {
                 let imported = try await Task.detached {
                     try WispOnDeviceModelStore().importModel(from: url)
                 }.value
-                onDeviceConfiguration = imported
+                settings.onDeviceConfiguration = imported
             } catch {
                 modelImportError = String(describing: error)
             }
             isImportingModel = false
         }
     }
-
-    private func trimmed(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
 }
 
 #Preview {
     ConnectionDashboardView()
+        .environmentObject(WispAppSettings())
 }

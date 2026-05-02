@@ -13,6 +13,11 @@ struct WispChatView: View {
 
     private let responsesClient = WispResponsesClient()
 
+    init(configuration: WispChatConfiguration, initialMessages: [ChatMessage] = []) {
+        self.configuration = configuration
+        _messages = State(initialValue: initialMessages)
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -99,14 +104,7 @@ struct WispChatView: View {
     }
 
     private func transcriptPrompt() -> String {
-        var lines = [
-            "System: You are Wisp, a concise personal assistant running inside an iPhone app."
-        ]
-        for message in messages {
-            lines.append("\(message.role.promptLabel): \(message.text)")
-        }
-        lines.append("Assistant:")
-        return lines.joined(separator: "\n\n")
+        WispPromptBuilder.chatTranscript(messages: messages)
     }
 
     private func scrollToBottom(with proxy: ScrollViewProxy) {
