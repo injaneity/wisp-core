@@ -17,6 +17,8 @@ do not implement `/v1/responses`, it falls back to `/v1/chat/completions`.
 
 The setup screen uses a supported-model dropdown for common OpenAI API choices
 and keeps a custom model option available for newly released or private models.
+Chat and Fast Capture stay disabled until the API key/model combination has
+passed the automatic backend health check.
 
 ## llama.cpp
 
@@ -75,6 +77,9 @@ Fast Capture opens a dedicated capture screen with:
 - speech capture using iOS speech recognition
 - the currently selected backend from setup
 - a `Continue in Chat` handoff after Wisp responds
+
+For remote backends, shortcut launches first run the same backend health check
+and only open Fast Capture after the selected backend is reachable.
 
 The simulator can test the screen through the `Fast Capture` button on setup.
 The physical iPhone is required to validate the actual Action Button long-press

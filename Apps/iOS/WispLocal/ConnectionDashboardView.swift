@@ -13,6 +13,7 @@ struct ConnectionDashboardView: View {
     @State private var isShowingModelImporter = false
     @State private var isImportingModel = false
     @State private var modelImportError: String?
+    @State private var autoConnectionTestTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -33,16 +34,16 @@ struct ConnectionDashboardView: View {
                     Button(action: startFastCapture) {
                         Label("Fast Capture", systemImage: "bolt.fill")
                     }
-                    .disabled(!canStartChat)
+                    .disabled(!canEnterWisp)
                 } footer: {
-                    Text("Use this to test the Action Button shortcut flow from inside the simulator.")
+                    Text(entryReadinessMessage)
                 }
 
                 Section {
                     Button(action: startChat) {
                         Label("Continue to Chat", systemImage: "message")
                     }
-                    .disabled(!canStartChat)
+                    .disabled(!canEnterWisp)
                 }
             }
             .navigationTitle("Wisp Setup")
@@ -69,8 +70,16 @@ struct ConnectionDashboardView: View {
             allowsMultipleSelection: false,
             onCompletion: importModel
         )
+        .onAppear {
+            scheduleAutomaticConnectionTest()
+        }
         .onChange(of: settings.selectedSetup) {
             connectionModel.resetHealth()
+            scheduleAutomaticConnectionTest()
+        }
+        .onChange(of: remoteConnectionFingerprint) {
+            connectionModel.resetHealth()
+            scheduleAutomaticConnectionTest()
         }
     }
 
@@ -115,8 +124,62 @@ struct ConnectionDashboardView: View {
         }
     }
 
-    private var canStartChat: Bool {
-        settings.canStartChat && !isImportingModel
+    private var canEnterWisp: Bool {
+        guard settings.canStartChat && !isImportingModel else {
+            return false
+        }
+
+        if settings.selectedSetup.usesRemoteBackend {
+            return verifiedRemoteBackend != nil
+        }
+
+        return true
+    }
+
+    private var verifiedRemoteBackend: WispModelBackend? {
+        guard let backend = settings.configuredRemoteBackend,
+              let health = connectionModel.health,
+              health.status == .reachable,
+              health.backend == backend else {
+            return nil
+        }
+        return backend
+    }
+
+    private var remoteConnectionFingerprint: String {
+        guard let backend = settings.configuredRemoteBackend else {
+            return "none|\(settings.selectedSetup.rawValue)"
+        }
+        return [
+            settings.selectedSetup.rawValue,
+            backend.baseURL,
+            backend.model,
+            backend.authorizationHeader() ?? ""
+        ].joined(separator: "|")
+    }
+
+    private var entryReadinessMessage: String {
+        if !settings.canStartChat {
+            return "Complete setup before using Wisp."
+        }
+
+        if settings.selectedSetup == .onDeviceLlamaCPP {
+            return isImportingModel ? "Importing the model before Wisp can start." : "Local model selected. You can continue."
+        }
+
+        if connectionModel.isChecking {
+            return "Testing the selected backend automatically."
+        }
+
+        guard let health = connectionModel.health else {
+            return "Wisp will automatically test the selected backend before enabling chat."
+        }
+
+        if health.status == .reachable && verifiedRemoteBackend != nil {
+            return "Backend verified. Wisp is ready."
+        }
+
+        return "Backend is not ready: \(health.message)"
     }
 
     private func testConnection() {
@@ -126,11 +189,35 @@ struct ConnectionDashboardView: View {
         connectionModel.testConnection(to: backend)
     }
 
+    private func scheduleAutomaticConnectionTest() {
+        autoConnectionTestTask?.cancel()
+
+        guard settings.selectedSetup.usesRemoteBackend,
+              let backend = settings.configuredRemoteBackend,
+              settings.canStartChat else {
+            return
+        }
+
+        autoConnectionTestTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(450))
+            guard !Task.isCancelled else {
+                return
+            }
+            connectionModel.testConnection(to: backend)
+        }
+    }
+
     private func startChat() {
+        guard canEnterWisp else {
+            return
+        }
         chatConfiguration = settings.chatConfiguration
     }
 
     private func startFastCapture() {
+        guard canEnterWisp else {
+            return
+        }
         WispAppRouter.shared.openFastCapture()
     }
 
