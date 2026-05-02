@@ -1,4 +1,5 @@
 import Foundation
+import WispCore
 final class ConversationState {
     private(set) var inputItems: [ResponseInputItem] = []
 
@@ -94,7 +95,7 @@ func runAgentLoop(_ userMessage: String, config: CLIConfig) throws {
             try callModelWithTools(
                 replayInputItems: config.conversationState.inputItems,
                 promptConfig: config.promptConfig,
-                codex: config.codex,
+                modelBackend: config.modelBackend,
                 sessionID: config.sessionID
             )
         }
@@ -189,37 +190,64 @@ func runAgentLoop(_ userMessage: String, config: CLIConfig) throws {
 func callModelWithTools(
     replayInputItems: [ResponseInputItem],
     promptConfig: PromptConfig,
-    codex: CodexSettings,
+    modelBackend: WispModelBackend,
     sessionID: String
 ) throws -> (assistantMessages: [String], toolCalls: [ToolCall]) {
-    let token = try loadCodexOAuthToken(authFile: codex.authFile)
-    let url = try CodexOAuth.resolveResponsesURL(baseURL: codex.baseURL)
+    let url = try modelBackend.responsesURL()
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
 
     let instructions = promptConfig.systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
     let promptCacheKey = buildPromptCacheKey(sessionID: sessionID)
-    let headers = try CodexOAuth.buildSSEHeaders(token: token, sessionID: promptCacheKey)
+    let headers = try buildModelRequestHeaders(for: modelBackend, sessionID: promptCacheKey)
     for (name, value) in headers {
         request.setValue(value, forHTTPHeaderField: name)
     }
 
-    let payload: [String: Any] = [
-        "model": codex.model,
+    var payload: [String: Any] = [
+        "model": modelBackend.model,
         "instructions": instructions,
         "prompt_cache_key": promptCacheKey,
         "store": false,
         "stream": true,
-        "reasoning": ["effort": codex.reasoningEffort, "summary": "auto"],
         "input": try jsonObject(replayInputItems),
-        "tool_choice": "auto",
-        "parallel_tool_calls": true,
         "tools": makeToolDefinitions()
     ]
+    if let reasoningEffort = modelBackend.reasoningEffort {
+        payload["reasoning"] = ["effort": reasoningEffort, "summary": "auto"]
+    }
+    if modelBackend.sendsCodexOnlyRequestFields {
+        payload["tool_choice"] = "auto"
+        payload["parallel_tool_calls"] = true
+    } else {
+        payload.removeValue(forKey: "prompt_cache_key")
+        payload.removeValue(forKey: "store")
+    }
 
     let requestBody = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
     request.httpBody = requestBody
     return try streamToolCallingResponse(request)
+}
+
+func buildModelRequestHeaders(for backend: WispModelBackend, sessionID: String) throws -> [String: String] {
+    if backend.usesCodexOAuth {
+        guard let authFile = backend.authFile else {
+            throw AppError.io("Codex provider requires an auth file.")
+        }
+        let token = try loadCodexOAuthToken(authFile: authFile)
+        return try CodexOAuth.buildSSEHeaders(token: token, sessionID: sessionID)
+    }
+
+    var headers = [
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        "User-Agent": "wisp",
+        "x-client-request-id": sessionID
+    ]
+    if let authorizationHeader = backend.authorizationHeader() {
+        headers["Authorization"] = authorizationHeader
+    }
+    return headers
 }
 
 func makeToolDefinitions() -> [[String: Any]] {
@@ -854,4 +882,3 @@ func buildUnifiedDiff(path: String, oldContent: String, newContent: String) -> S
     }
     return lines.joined(separator: "\n")
 }
-

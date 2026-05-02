@@ -16,3 +16,7 @@ evals/tmp/
 
 # macOS / editor noise
 .DS_Store
+
+# Xcode local user state
+xcuserdata/
+*.xcuserstate

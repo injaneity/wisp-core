@@ -1,12 +1,13 @@
 import Foundation
 import CryptoKit
 import Darwin
+import WispCore
 
 struct CLIConfig {
     let verbose: Bool
     let logPath: URL
     let logWriter: EventLogWriter
-    let codex: CodexSettings
+    let modelBackend: WispModelBackend
     let promptConfig: PromptConfig
     let sessionID: String
     let repoRoot: URL
@@ -101,19 +102,14 @@ final class EventLogWriter {
     }
 }
 
-struct CodexSettings {
-    let baseURL: String
-    let authFile: URL
-    let model: String
-    let reasoningEffort: String
-}
-
 struct WorkspaceConfigValues {
     let repoRoot: URL
     let wikiRoot: URL?
+    let provider: WispModelProvider?
     let model: String?
     let reasoningEffort: String?
     let baseURL: String?
+    let apiKeyEnvironmentVariable: String?
 }
 
 struct PromptConfig {
@@ -459,7 +455,7 @@ func makeCLIConfig(verbose: Bool, workspaceConfig: ResolvedWorkspaceConfig, work
         verbose: verbose,
         logPath: logPath,
         logWriter: EventLogWriter(path: logPath),
-        codex: resolveCodexSettings(workspaceConfig: workspaceConfig),
+        modelBackend: resolveModelBackend(workspaceConfig: workspaceConfig),
         promptConfig: try loadPromptConfig(repoRoot: workspaceConfig.repoRoot, wikiRoot: wikiRoot),
         sessionID: UUID().uuidString.lowercased(),
         repoRoot: workspaceConfig.repoRoot,
@@ -555,16 +551,19 @@ func isoNow() -> String {
     return formatter.string(from: Date())
 }
 
-func resolveCodexSettings(workspaceConfig: ResolvedWorkspaceConfig) -> CodexSettings {
+func resolveModelBackend(workspaceConfig: ResolvedWorkspaceConfig) -> WispModelBackend {
     let env = ProcessInfo.processInfo.environment
     let home = env["HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path
     let authFile = URL(fileURLWithPath: home).appendingPathComponent(".codex/auth.json")
+    let provider = workspaceConfig.values.provider ?? .codex
 
-    return CodexSettings(
-        baseURL: workspaceConfig.values.baseURL ?? "https://chatgpt.com/backend-api/codex",
-        authFile: authFile,
-        model: workspaceConfig.values.model ?? "gpt-5.4",
-        reasoningEffort: workspaceConfig.values.reasoningEffort ?? "medium"
+    return WispModelBackend(
+        provider: provider,
+        baseURL: workspaceConfig.values.baseURL,
+        model: workspaceConfig.values.model ?? (provider == .codex ? "gpt-5.4" : "gemma4"),
+        reasoningEffort: workspaceConfig.values.reasoningEffort ?? (provider == .codex ? "medium" : nil),
+        authFile: provider == .codex ? authFile : nil,
+        apiKeyEnvironmentVariable: workspaceConfig.values.apiKeyEnvironmentVariable
     )
 }
 
@@ -718,8 +717,11 @@ func renderWorkspaceConfig(repoRoot: URL, wikiRoot: URL?) -> String {
         "  repo_root: \(quoteYAMLScalar(repoRoot.path))",
         "  wiki_root: \(quoteYAMLScalar(wikiRootPath))",
         "model:",
+        "  provider: \"codex\" # codex, ollama, lmstudio, llamacpp, openai_compatible",
         "  name: \"gpt-5.4\"",
-        "  reasoning_effort: \"medium\""
+        "  reasoning_effort: \"medium\"",
+        "  # base_url: \"http://localhost:11434/v1\"",
+        "  # api_key_env: \"OPENAI_API_KEY\""
     ].joined(separator: "\n") + "\n"
 }
 
@@ -800,89 +802,27 @@ func wikiSchemaPath(wikiRoot: URL) -> URL {
 }
 
 func todayString() -> String {
-    let formatter = DateFormatter()
-    formatter.calendar = Calendar(identifier: .iso8601)
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.timeZone = TimeZone(secondsFromGMT: 0)
-    formatter.dateFormat = "yyyy-MM-dd"
-    return formatter.string(from: Date())
-}
-
-func normalizeSummaryLine(_ summary: String) -> String {
-    summary
-        .replacingOccurrences(of: "\n", with: " ")
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-}
-
-func normalizeArtifactReference(_ value: String) -> String? {
-    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return nil }
-    if trimmed.hasPrefix("[[") && trimmed.hasSuffix("]]") {
-        let start = trimmed.index(trimmed.startIndex, offsetBy: 2)
-        let end = trimmed.index(trimmed.endIndex, offsetBy: -2)
-        let inner = trimmed[start..<end].trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !inner.isEmpty else { return nil }
-        return "[[\(inner)]]"
-    }
-    return "[[\(trimmed)]]"
-}
-
-func renderArtifactsLine(_ artifacts: [String]) -> String {
-    var seen = Set<String>()
-    let cleaned = artifacts
-        .compactMap(normalizeArtifactReference)
-        .filter { seen.insert($0).inserted }
-    if cleaned.isEmpty { return "artifacts: none" }
-    return "artifacts: " + cleaned.joined(separator: ", ")
+    WispMarkdownRenderer().todayString()
 }
 
 func slugifyFileStem(_ title: String) -> String {
-    let lowered = title.lowercased()
-    let pieces = lowered.split { !$0.isLetter && !$0.isNumber }
-    let slug = pieces.map(String.init).filter { !$0.isEmpty }.joined(separator: "-")
-    return slug.isEmpty ? "untitled" : slug
-}
-
-func renderEntryDocument(title: String, summary: String, artifacts: [String], content: String, extraLines: [String] = []) -> String {
-    let normalizedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
-    let today = todayString()
-    var lines = [
-        "# \(title.trimmingCharacters(in: .whitespacesAndNewlines))",
-        "created: \(today)",
-        "modified: \(today)",
-        "summary: \(normalizeSummaryLine(summary))",
-        renderArtifactsLine(artifacts)
-    ]
-    lines.append(contentsOf: extraLines)
-    lines.append("")
-    if !normalizedContent.isEmpty {
-        lines.append(normalizedContent)
-        lines.append("")
-    }
-    return lines.joined(separator: "\n")
-}
-
-func normalizedMetadataValue(_ value: String?, defaultValue: String) -> String {
-    let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return trimmed.isEmpty ? defaultValue : trimmed
+    WispMarkdownRenderer().slugifyFileStem(title)
 }
 
 func renderNoteDocument(title: String, summary: String, artifacts: [String], content: String) -> String {
-    renderEntryDocument(title: title, summary: summary, artifacts: artifacts, content: content)
+    WispMarkdownRenderer().renderNote(title: title, summary: summary, artifacts: artifacts, content: content)
 }
 
 func renderTaskDocument(title: String, summary: String, artifacts: [String], content: String, due: String?, time: String?, place: String?, status: String?) -> String {
-    renderEntryDocument(
+    WispMarkdownRenderer().renderTask(
         title: title,
         summary: summary,
         artifacts: artifacts,
         content: content,
-        extraLines: [
-            "status: \(normalizedMetadataValue(status, defaultValue: "open"))",
-            "due: \(normalizedMetadataValue(due, defaultValue: "none"))",
-            "time: \(normalizedMetadataValue(time, defaultValue: "none"))",
-            "place: \(normalizedMetadataValue(place, defaultValue: "none"))"
-        ]
+        due: due,
+        time: time,
+        place: place,
+        status: status
     )
 }
 
@@ -970,9 +910,11 @@ func resolveWorkspaceConfig(startingAt: URL) throws -> ResolvedWorkspaceConfig {
     let values = WorkspaceConfigValues(
         repoRoot: defaultRoot,
         wikiRoot: nil,
+        provider: nil,
         model: nil,
         reasoningEffort: nil,
-        baseURL: nil
+        baseURL: nil,
+        apiKeyEnvironmentVariable: nil
     )
     return ResolvedWorkspaceConfig(
         configPath: nil,
@@ -1014,10 +956,17 @@ func makeWorkspaceConfigValues(rawValues: [String: String], configRoot: URL) thr
     return WorkspaceConfigValues(
         repoRoot: resolvedRepoRoot,
         wikiRoot: resolvedWikiRoot,
+        provider: parseModelProvider(rawValues["model.provider"]),
         model: normalizeConfigValue(rawValues["model.name"]),
         reasoningEffort: normalizeConfigValue(rawValues["model.reasoning_effort"]),
-        baseURL: normalizeConfigValue(rawValues["model.base_url"])
+        baseURL: normalizeConfigValue(rawValues["model.base_url"]),
+        apiKeyEnvironmentVariable: normalizeConfigValue(rawValues["model.api_key_env"])
     )
+}
+
+func parseModelProvider(_ value: String?) -> WispModelProvider? {
+    guard normalizeConfigValue(value) != nil else { return nil }
+    return WispModelProvider(configValue: value)
 }
 
 func resolveConfiguredURL(rawValue: String?, baseDirectory: URL, fieldName: String, defaultURL: URL?) throws -> URL? {
