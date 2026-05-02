@@ -35,8 +35,6 @@ struct ConnectionDashboardView: View {
                         Label("Fast Capture", systemImage: "bolt.fill")
                     }
                     .disabled(!canEnterWisp)
-                } footer: {
-                    Text(entryReadinessMessage)
                 }
 
                 Section {
@@ -156,30 +154,6 @@ struct ConnectionDashboardView: View {
             backend.model,
             backend.authorizationHeader() ?? ""
         ].joined(separator: "|")
-    }
-
-    private var entryReadinessMessage: String {
-        if !settings.canStartChat {
-            return "Complete setup before using Wisp."
-        }
-
-        if settings.selectedSetup == .onDeviceLlamaCPP {
-            return isImportingModel ? "Importing the model before Wisp can start." : "Local model selected. You can continue."
-        }
-
-        if connectionModel.isChecking {
-            return "Testing the selected backend automatically."
-        }
-
-        guard let health = connectionModel.health else {
-            return "Wisp will automatically test the selected backend before enabling chat."
-        }
-
-        if health.status == .reachable && verifiedRemoteBackend != nil {
-            return "Backend verified. Wisp is ready."
-        }
-
-        return "Backend is not ready: \(health.message)"
     }
 
     private func testConnection() {
