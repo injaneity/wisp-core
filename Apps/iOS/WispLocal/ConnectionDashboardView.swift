@@ -32,30 +32,21 @@ struct ConnectionDashboardView: View {
 
                 Section {
                     Button(action: startFastCapture) {
-                        Label("Fast Capture", systemImage: "bolt.fill")
+                        Label("Talk", systemImage: "waveform")
                     }
                     .disabled(!canEnterWisp)
+                    .foregroundStyle(canEnterWisp ? .primary : .secondary)
                 }
 
                 Section {
                     Button(action: startChat) {
-                        Label("Continue to Chat", systemImage: "message")
+                        Label("Chat", systemImage: "message")
                     }
                     .disabled(!canEnterWisp)
+                    .foregroundStyle(canEnterWisp ? .primary : .secondary)
                 }
             }
             .navigationTitle("Wisp Setup")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    if settings.selectedSetup.usesRemoteBackend {
-                        Button(action: testConnection) {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        .accessibilityLabel("Test Connection")
-                        .disabled(connectionModel.isChecking)
-                    }
-                }
-            }
             .navigationDestination(isPresented: isChatPresented) {
                 if let chatConfiguration {
                     WispChatView(configuration: chatConfiguration)
@@ -100,8 +91,7 @@ struct ConnectionDashboardView: View {
                 model: $settings.openAIModel,
                 apiKey: $settings.openAIAPIKey,
                 health: connectionModel.health,
-                isChecking: connectionModel.isChecking,
-                onTestConnection: testConnection
+                isChecking: connectionModel.isChecking
             )
         case .onDeviceLlamaCPP:
             OnDeviceSetupSection(
@@ -116,8 +106,7 @@ struct ConnectionDashboardView: View {
                 model: $settings.tailscaleModel,
                 bearerToken: $settings.tailscaleBearerToken,
                 health: connectionModel.health,
-                isChecking: connectionModel.isChecking,
-                onTestConnection: testConnection
+                isChecking: connectionModel.isChecking
             )
         }
     }

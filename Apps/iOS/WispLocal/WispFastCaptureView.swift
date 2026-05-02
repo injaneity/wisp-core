@@ -31,7 +31,7 @@ struct WispFastCaptureView: View {
 
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Label("Fast Capture", systemImage: "bolt.fill")
+                        Label("Talk", systemImage: "waveform")
                             .font(.headline)
                         Spacer()
                         Button(action: toggleSpeechCapture) {
@@ -129,7 +129,7 @@ struct WispFastCaptureView: View {
             }
             .padding(16)
         }
-        .navigationTitle("Fast Capture")
+        .navigationTitle("Talk")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {

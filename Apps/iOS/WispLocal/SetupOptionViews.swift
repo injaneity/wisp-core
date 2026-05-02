@@ -7,7 +7,6 @@ struct OpenAISetupSection: View {
     @Binding var apiKey: String
     let health: WispBackendHealth?
     let isChecking: Bool
-    let onTestConnection: () -> Void
 
     var body: some View {
         Section("OpenAI API") {
@@ -21,8 +20,7 @@ struct OpenAISetupSection: View {
 
             WispBackendConnectionView(
                 health: health,
-                isChecking: isChecking,
-                onTestConnection: onTestConnection
+                isChecking: isChecking
             )
             .listRowInsets(EdgeInsets())
         }
@@ -130,7 +128,6 @@ struct TailscaleSetupSection: View {
     @Binding var bearerToken: String
     let health: WispBackendHealth?
     let isChecking: Bool
-    let onTestConnection: () -> Void
 
     var body: some View {
         Section("Tailscale Mac") {
@@ -149,8 +146,7 @@ struct TailscaleSetupSection: View {
 
             WispBackendConnectionView(
                 health: health,
-                isChecking: isChecking,
-                onTestConnection: onTestConnection
+                isChecking: isChecking
             )
             .listRowInsets(EdgeInsets())
         }

@@ -45,16 +45,13 @@ public struct WispBackendConnectionView: View {
     private let visibleModelLimit = 4
     private let health: WispBackendHealth?
     private let isChecking: Bool
-    private let onTestConnection: () -> Void
 
     public init(
         health: WispBackendHealth?,
-        isChecking: Bool,
-        onTestConnection: @escaping () -> Void
+        isChecking: Bool
     ) {
         self.health = health
         self.isChecking = isChecking
-        self.onTestConnection = onTestConnection
     }
 
     public var body: some View {
@@ -64,16 +61,10 @@ public struct WispBackendConnectionView: View {
                     .font(.headline)
                     .foregroundStyle(statusColor)
                 Spacer()
-                Button(action: onTestConnection) {
-                    if isChecking {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Label("Test", systemImage: "arrow.clockwise")
-                    }
+                if isChecking {
+                    ProgressView()
+                        .controlSize(.small)
                 }
-                .buttonStyle(.bordered)
-                .disabled(isChecking)
             }
 
             if let health {
@@ -133,7 +124,7 @@ public struct WispBackendConnectionView: View {
                     }
                 }
             } else {
-                Text("No connection check has run.")
+                Text(isChecking ? "Verifying automatically." : "Enter connection details to start automatic verification.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -221,7 +212,6 @@ public struct WispBackendConnectionView: View {
             models: ["gemma4"],
             message: "Server is reachable with 1 model."
         ),
-        isChecking: false,
-        onTestConnection: {}
+        isChecking: false
     )
 }

@@ -99,7 +99,7 @@ private struct FastCaptureValidationView: View {
             }
 
             VStack(spacing: 8) {
-                Text(isChecking ? "Testing backend" : "Backend not ready")
+                Text(isChecking ? "Verifying backend" : "Backend not ready")
                     .font(.title2.bold())
 
                 Text(message)
@@ -110,26 +110,26 @@ private struct FastCaptureValidationView: View {
 
             if !isChecking {
                 Button(action: onRetry) {
-                    Label("Retry Test", systemImage: "arrow.clockwise")
+                    Label("Retry Verification", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.borderedProminent)
             }
         }
         .padding(32)
-        .navigationTitle("Fast Capture")
+        .navigationTitle("Talk")
         .navigationBarTitleDisplayMode(.inline)
     }
 
     private var message: String {
         if isChecking {
-            return "Wisp is verifying the selected backend before opening Fast Capture."
+            return "Wisp is verifying the selected backend before opening Talk."
         }
 
         if let health {
             return health.message
         }
 
-        return "Wisp must verify the selected backend before opening Fast Capture."
+        return "Wisp must verify the selected backend before opening Talk."
     }
 }
 
@@ -145,7 +145,7 @@ private struct FastCaptureSetupRequiredView: View {
             VStack(spacing: 8) {
                 Text("Finish setup first")
                     .font(.title2.bold())
-                Text("Fast Capture uses your selected Wisp backend. Add an API key, choose a local model, or configure Tailscale Mac before launching from the Action Button.")
+                Text("Talk uses your selected Wisp backend. Add an API key, choose a local model, or configure Tailscale Mac before launching from the Action Button.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -157,7 +157,7 @@ private struct FastCaptureSetupRequiredView: View {
             .buttonStyle(.borderedProminent)
         }
         .padding(32)
-        .navigationTitle("Fast Capture")
+        .navigationTitle("Talk")
         .navigationBarTitleDisplayMode(.inline)
     }
 }

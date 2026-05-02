@@ -1,7 +1,7 @@
 import AppIntents
 
 struct FastCaptureIntent: AppIntent {
-    static let title: LocalizedStringResource = "Fast Capture with Wisp"
+    static let title: LocalizedStringResource = "Talk with Wisp"
     static let description = IntentDescription("Open Wisp directly to a quick voice or text capture screen.")
     static let openAppWhenRun = true
 
@@ -23,11 +23,11 @@ struct WispAppShortcuts: AppShortcutsProvider {
         AppShortcut(
             intent: FastCaptureIntent(),
             phrases: [
-                "Fast capture with \(.applicationName)",
+                "Talk with \(.applicationName)",
                 "Ask \(.applicationName)",
                 "New Wisp note with \(.applicationName)"
             ],
-            shortTitle: "Fast Capture",
+            shortTitle: "Talk",
             systemImageName: "mic.badge.plus"
         )
     }

@@ -15,7 +15,7 @@ enum WispPromptBuilder {
     static func fastCapture(text: String) -> String {
         [
             "System: You are Wisp, a concise personal assistant running inside an iPhone app.",
-            "The user opened Fast Capture from a shortcut or the Action Button.",
+            "The user opened Talk from a shortcut or the Action Button.",
             "Respond directly and briefly. If the capture sounds like a note, reminder, draft, or task, structure it into useful next steps.",
             "User: \(text)",
             "Assistant:"
