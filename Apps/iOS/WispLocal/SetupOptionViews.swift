@@ -8,13 +8,11 @@ struct OpenAISetupSection: View {
     let health: WispBackendHealth?
     let isChecking: Bool
     let onTestConnection: () -> Void
-    @State private var isUsingCustomModel = false
 
     var body: some View {
         Section("OpenAI API") {
             OpenAIModelDropdown(
-                model: $model,
-                isUsingCustomModel: $isUsingCustomModel
+                model: $model
             )
 
             SecureField("API key", text: $apiKey)
@@ -33,89 +31,56 @@ struct OpenAISetupSection: View {
 
 private struct OpenAIModelDropdown: View {
     @Binding var model: String
-    @Binding var isUsingCustomModel: Bool
+    @State private var selectedModel: String = "gpt-5.4"
+    @State private var customModel = ""
 
     private let supportedModels = [
         OpenAIModelChoice(id: "gpt-5.4", title: "GPT-5.4", subtitle: "Current Wisp default"),
-        OpenAIModelChoice(id: "gpt-5.5", title: "GPT-5.5", subtitle: "Latest GPT model")
+        OpenAIModelChoice(id: "gpt-5.5", title: "GPT-5.5", subtitle: "Latest GPT model"),
+        OpenAIModelChoice(id: "custom", title: "Custom", subtitle: "Enter a model name")
     ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Menu {
+            Picker("Model", selection: $selectedModel) {
                 ForEach(supportedModels) { choice in
-                    Button {
-                        model = choice.id
-                        isUsingCustomModel = false
-                    } label: {
-                        if model == choice.id && !isUsingCustomModel {
-                            Label(choice.title, systemImage: "checkmark")
-                        } else {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
                             Text(choice.title)
-                        }
-                    }
-                }
-
-                Divider()
-
-                Button {
-                    isUsingCustomModel = true
-                } label: {
-                    if isCustomModel {
-                        Label("Custom model", systemImage: "checkmark")
-                    } else {
-                        Text("Custom model")
-                    }
-                }
-            } label: {
-                HStack(spacing: 12) {
-                    Text("Supported model")
-                        .foregroundStyle(.primary)
-
-                    Spacer(minLength: 12)
-
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text(selectedTitle)
-                            .foregroundStyle(.primary)
-                        if let subtitle = selectedSubtitle {
-                            Text(subtitle)
+                            Text(choice.subtitle)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    .multilineTextAlignment(.trailing)
-
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                    .tag(choice.id)
                 }
-                .contentShape(Rectangle())
+            }
+            .pickerStyle(.navigationLink)
+            .onChange(of: selectedModel) {
+                if selectedModel == "custom" {
+                    model = customModel
+                } else {
+                    model = selectedModel
+                }
             }
 
-            if isCustomModel {
+            if selectedModel == "custom" {
                 TextField("Custom model", text: $model)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .onChange(of: model) {
+                        customModel = model
+                    }
             }
         }
         .onAppear {
-            isUsingCustomModel = !supportedModels.contains { $0.id == model }
+            if supportedModels.contains(where: { $0.id == model }) {
+                selectedModel = model
+            } else {
+                selectedModel = "custom"
+                customModel = model
+            }
         }
-    }
-
-    private var isCustomModel: Bool {
-        isUsingCustomModel || !supportedModels.contains { $0.id == model }
-    }
-
-    private var selectedTitle: String {
-        if isCustomModel {
-            return model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Custom" : model
-        }
-        return supportedModels.first { $0.id == model }?.title ?? model
-    }
-
-    private var selectedSubtitle: String? {
-        isCustomModel ? nil : supportedModels.first { $0.id == model }?.subtitle
     }
 }
 
